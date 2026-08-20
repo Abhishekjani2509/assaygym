@@ -66,7 +66,7 @@ and a careful read both missed:
 | 2 | pipetting applied after the batch shift | both orders give identical plate means |
 | 3 | assay rng re-created per plate | the test compared plates on *different lots*, so potency alone made them differ |
 | 3 | `days_used` frozen at 0 | only "a refusal changes nothing" was pinned, never "a plate advances the clock" |
-| 4 | *(see the Phase 4 section of the README)* | |
+| 4 | `sign_acc` denominator: true positives vs everything submitted | every sign test had either zero true positives or an exactly-correct hit set, and in both the two sets coincide |
 
 Every one was a test passing for the wrong reason. When a mutant survives, the
 fix is a new test that names the signature the mutant destroys — never deleting
@@ -103,6 +103,13 @@ mutant.
   would stop being a comparison between policies.
 - **`qc()` is free and must stay free.** Skipping QC has to be a judgment
   failure we can score, not a budget constraint we imposed.
+- **`efficiency` is gated on `endpoint > 0.4`,** and the gate is a strict `>`.
+  Ungated, banking the budget beats running the experiment. `tools/mutate.py`
+  carries four mutants on that one branch.
+- **Diagnostics are never summed into reward.** `decoy_called` is the direct
+  measurement of prior-dependence; it has to stay reportable without the reward
+  having been tuned against it. Both totals are asserted to reproduce exactly
+  from their declared weight tables, so a leak shows up as a mismatch.
 
 ## Phase status
 
@@ -111,7 +118,8 @@ mutant.
 | 1 | `assaygym/world.py` | `tests/test_world.py` (15 checks, passing) |
 | 2 | `assaygym/assay.py` | `tests/test_assay.py` (17 checks, passing) |
 | 3 | `assaygym/env.py` | `tests/test_env.py` (23 checks, passing) |
-| 4 | `assaygym/rewards.py` | not started |
+| 4 | `assaygym/rewards.py` | `tests/test_rewards.py` (24 checks, passing) |
+| 5 | `assaygym/policies.py` | not started |
 
 Each phase has an acceptance check that must pass before the next phase begins.
 

@@ -7,9 +7,22 @@ realism.
 Phase 1 (``world.py``) samples the hidden ground truth. Phase 2 (``assay.py``)
 turns it into the noisy measurements an agent actually sees. Phase 3
 (``env.py``) is the lab bench the agent operates: budget, four tools, one
-submission.
+submission. Phase 4 (``rewards.py``) is the judge: three separate numbers plus
+diagnostics that are reported but never scored.
 """
 
+from assaygym.rewards import (
+    EC50_TOLERANCE,
+    EFFICIENCY_GATE,
+    ENDPOINT_WEIGHTS,
+    SHAPED_WEIGHTS,
+    diagnostics,
+    endpoint_terms,
+    score,
+    score_trajectory,
+    shaped_terms,
+    strict_pass,
+)
 from assaygym.env import (
     ASSAY_RNG_OFFSET,
     LOTS,
@@ -67,6 +80,17 @@ __all__ = [
     "LOTS",
     "ASSAY_RNG_OFFSET",
     "plate_cost",
+    # rewards (Phase 4)
+    "score",
+    "score_trajectory",
+    "strict_pass",
+    "endpoint_terms",
+    "shaped_terms",
+    "diagnostics",
+    "ENDPOINT_WEIGHTS",
+    "SHAPED_WEIGHTS",
+    "EC50_TOLERANCE",
+    "EFFICIENCY_GATE",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

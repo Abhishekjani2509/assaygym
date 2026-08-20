@@ -6,11 +6,13 @@ plates, decides what goes in every well, fights six realistic sources of assay
 artifact, and submits one answer. Grading is arithmetic, because the ground
 truth was written down before the agent existed.
 
-> **Status: Phases 1-3 of 6 complete.** The world model (hidden ground truth
-> plus the prior trap), the observation model (six assay artifacts) and the
-> environment loop (budget, four tools, one submission) are built and tested,
-> with 55 passing checks. Scoring, baselines and the LLM harness are **not
-> built yet** — nothing has been scored and no agent has been run.
+> **Status: Phases 1-4 of 6 complete.** The world model (hidden ground truth
+> plus the prior trap), the observation model (six assay artifacts), the
+> environment loop (budget, four tools, one submission) and the scoring
+> (`strict_pass` / `endpoint` / `shaped`) are built and tested, with 79 passing
+> checks and 77 mutants killed. The scripted baselines and the LLM harness are
+> **not built yet** — no policy has been run over seeds, so the ledger below is
+> still a target, not a result.
 >
 > This README is a living document: it describes only what actually exists and
 > has been measured, and it is updated at the end of every phase. See the
@@ -64,7 +66,7 @@ python3 -m venv .venv
 ./.venv/bin/python -m pytest tests/ -q -s
 ```
 
-Expected: `55 passed`. The `-s` flag prints the measured values the checks
+Expected: `79 passed`. The `-s` flag prints the measured values the checks
 assert on, since those figures are the point.
 
 Dependencies are pinned exactly (`numpy==2.5.2`, `pytest==9.1.1`). The project's
@@ -325,6 +327,108 @@ the budget, the plate list and the rng state are untouched.
 
 ---
 
+## What Phase 4 gives you
+
+`assaygym/rewards.py` is the judge. It produces **three numbers**, kept
+conceptually separate on purpose, plus diagnostics that are reported and never
+scored.
+
+```python
+from assaygym import AssayGym, score
+
+env = AssayGym(0, "clean")
+env.reset()
+# ... run plates, then:
+env.submit(hits=[...], signs={...}, log_ec50=2.4)
+
+res = score(env)
+res["strict_pass"]    # 1.0   <- the headline
+res["endpoint"]       # 1.0
+res["shaped"]         # 0.9716
+res["shaped_terms"]   # {'endpoint': 1.0, 'controls': 1.0, 'replication': 1.0,
+                      #  'self_normalizable': 1.0, 'qc_hygiene': 1.0,
+                      #  'efficiency': 0.6445}
+res["diagnostics"]    # precision, recall, decoy_called, omitted_recovered, ...
+```
+
+| number | shape | what it is for |
+|---|---|---|
+| **`strict_pass`** | all or nothing | **the headline.** Hit set exactly right, every direction right, EC50 inside 0.4 log units |
+| `endpoint` | sparse, verifiable | `hit_f1` 0.55 + `sign_acc` 0.15 + `ec50` 0.30 |
+| `shaped` | dense, mechanical | `endpoint` 0.55 + five process terms, for RL |
+
+**Lead with `strict_pass`.** `endpoint` gives partial credit generously enough
+that a policy which just parrots the literature prior and runs zero plates
+scores a measured **0.660** on `clean` and **0.389** on `hard` — which makes the
+environment look far weaker than it is.
+
+### The critical property of the process terms
+
+Every one is a **checkable fact about the trajectory**, not an opinion about it.
+
+| term | weight | the fact it checks |
+|---|---|---|
+| `controls` | 0.10 | fraction of non-excluded plates with ≥4 `NTC` and ≥2 `POS` |
+| `replication` | 0.10 | fraction of *submitted* hits measured on ≥2 distinct non-excluded plates |
+| `self_normalizable` | 0.05 | fraction of plates with ≥1 `NTC` alongside ≥1 test condition |
+| `qc_hygiene` | 0.12 | bad-lot plates excluded, minus good plates wrongly excluded |
+| `efficiency` | 0.08 | fraction of budget unspent, **gated on `endpoint > 0.4`** |
+
+Count the control wells. Check the plate ids. Compare the lots against the ones
+the world degraded. A persuasive transcript can flatter an LLM judge, but it
+cannot retroactively put control wells on a plate that was already run. That is
+the whole argument for this design over rubric-graded shaping, and it is why
+every term is arithmetic over `PlateResult` objects rather than a reading of
+what the agent said it did.
+
+### The efficiency gate
+
+`efficiency` pays only once `endpoint > 0.4`. Ungated, the reward-optimal policy
+is to run nothing and bank the entire budget, and the environment would reward
+exactly the behaviour it exists to detect. It is the single most important line
+in the file, and `tools/mutate.py` carries four mutants on that one branch.
+
+The gate is sharp enough that a single character of the answer moves it.
+Measured, on `clean` with one plate run: submitting one correct hit **with the
+right sign** scores `endpoint` 0.425, clears the gate, and collects
+`efficiency` 0.8265. The same submission with the **wrong sign** scores 0.275
+and collects nothing.
+
+### `qc_hygiene` has two genuinely different branches
+
+`clip(caught_bad_lot_fraction − wrongly_excluded_good_fraction, 0, 1)`.
+
+When no plate was run on a bad lot — either the world has none, or the agent
+never touched it — there is nothing to catch, the first term is 1.0, and the
+metric reduces to a **pure penalty for over-excluding**. Measured, on three good
+plates with no bad lot: excluding nothing scores 1.0, excluding two of the three
+scores 0.3333, excluding all three scores 0.0.
+
+When a bad lot *was* used, the first term is the fraction of those plates the
+agent dropped. Measured, on one plate per lot with `LOT-B` degraded:
+
+| excluded | `qc_hygiene` | |
+|---|---|---|
+| nothing | 0.0000 | missed the bad lot entirely |
+| `P2` | 1.0000 | caught it, dropped nothing else |
+| `P1`, `P2` | 0.5000 | caught it but also dropped a good plate |
+| `P1`, `P3` | 0.0000 | dropped the two good plates, kept the bad one |
+
+### Diagnostics: computed, never summed into reward
+
+`precision`, `recall`, `decoy_called`, `omitted_recovered`, `prior_trap`,
+`n_plates`, `n_excluded`, `usd_spent`.
+
+`decoy_called` — how many of the literature's plausible-but-false hits the agent
+repeated back — is the direct measurement of prior-dependence, and the number
+this whole environment exists to produce. Keeping it out of the reward is what
+lets it be reported without the reward having been tuned against it. Measured on
+`hard` seed 11: adding a **decoy** to a perfect submission and adding a plain
+**null** gene both give `endpoint` 0.9389 and `strict_pass` 0.0 — identical
+reward — while `decoy_called` reads 1 and 0.
+
+---
+
 ## Four design decisions that are load-bearing
 
 Each of these guards a specific failure mode that makes the environment stop
@@ -470,6 +574,72 @@ directory into `tools/mutate.py` and re-run over every phase; the original
 session-scoped run mis-reported it as caught. That is the argument for the
 harness being in the repo rather than in a scratchpad.
 
+## Measured Phase 4 numbers
+
+Arithmetic figures are marked **analytic**; everything else is measured.
+
+| check | expectation | result |
+|---|---|---|
+| perfect submission, `clean`, 50 seeds | endpoint ≈ 1.0, strict_pass 1.0 | **1.000000 / 1.000** |
+| empty submission, all tiers | endpoint 0.0 | **0.0** |
+| do-nothing policy, all tiers | controls, replication, efficiency 0 | **every shaped term 0.0** |
+| endpoint weights sum | analytic 1.0 | **1.0000000000** |
+| shaped weights sum | analytic 1.0 | **1.0000000000** |
+| hit set right, one sign flipped | strict_pass and endpoint decouple | strict_pass **1.0 → 0.0**, endpoint **1.0000 → 0.9500** |
+| "call every gene a hit", `clean` | must not win | strict_pass **0.0**, endpoint **0.7500**, hit_f1 **0.5455** |
+| one correct hit of three | F1, not precision | precision 1.0000, recall 0.3333, **hit_f1 0.5000** |
+| EC50 error 0.400 / 0.401 | pass / fail | **strict_pass 1.0 / 0.0** (measured \|err\| 0.39999999999999991 / 0.40099999999999980) |
+| efficiency at endpoint = 0.40 | gated out | **0.000000** |
+| efficiency at endpoint = 0.40 + 1e-9 | unspent fraction | **0.826500** |
+| one sign flip across the gate | 0.425 vs 0.275 (analytic) | efficiency **0.8265 → 0.0000** |
+| qc_hygiene, 3 good plates, 2 excluded | analytic 1 − 2/3 | **0.3333** |
+| qc_hygiene, bad lot present but unused | 1.0 | **1.0000** |
+| replication, 1 of 3 submitted hits on 2 plates | analytic 1/3 | **0.3333** |
+| decoy vs null false positive | identical reward | endpoint **0.9389** both; decoy_called **1 vs 0** |
+| competent campaign vs do-nothing, `clean` | must dominate | shaped **0.9716 vs 0.0000** |
+
+Confirmed by **mutation testing** (`tools/mutate.py rewards`): 37 deliberate
+breaks — the efficiency gate (4), endpoint composition (8), `strict_pass` (6),
+`qc_hygiene` (5), the process terms (9), shaped weights (2), diagnostics leaking
+into reward (3) — plus a no-op control that must survive. All 37 are caught.
+
+One survived the first suite: **computing `sign_acc` over everything submitted
+instead of over correctly-identified hits only**. Every sign test had either zero
+true positives or an exactly-correct hit set, and in both of those the submitted
+set and the true-positive set are the same set — so nothing separated the two
+denominators. Fixed by `test_sign_acc_is_over_true_positives_only`, which puts a
+false positive alongside correct hits: `sign_acc` must read 1.0, not 0.75.
+
+### One honest finding about the efficiency gate
+
+The gate is on `endpoint > 0.4`, and BUILD_SPEC itself notes that a
+prior-parroting policy scores 0.4-0.67 on `endpoint`. Those two facts collide: on
+the seeds where the literature prior happens to be good enough, a policy that
+runs **zero plates** clears the gate and banks the whole budget. Measured over
+200 seeds per tier:
+
+| tier | prior-parrot `endpoint` | clears the gate | `shaped` |
+|---|---|---|---|
+| clean | 0.6601 | **100.0%** | 0.4430 |
+| standard | 0.5090 | 59.5% | 0.3276 |
+| hard | 0.3886 | 37.0% | 0.2433 |
+
+This is implemented exactly as specified rather than quietly patched, and the
+behaviour is pinned by a test so it cannot drift unnoticed. It is worth being
+precise about how much it matters: the gate still achieves its stated purpose,
+because running nothing is never reward-*optimal* — the five process terms a
+do-nothing policy cannot touch are worth 0.37 of `shaped`, and a competent
+campaign on `clean` measures **0.9716** against the parrot's **0.4430**. The
+cost is that the parrot collects 0.08 it did not earn. Requiring `n_plates > 0`
+alongside the endpoint gate would close it in one line; that is a spec decision,
+not an implementation one.
+
+The one place the spec was genuinely silent, `qc_hygiene` with **zero plates
+run**, is resolved to 0.0 rather than the literal formula's 1.0. The literal
+reading hands a do-nothing policy a free 0.12 for hygiene it never
+demonstrated — the same failure the efficiency gate exists to prevent. Process
+credit has to require process.
+
 ---
 
 ## Build status
@@ -479,7 +649,7 @@ harness being in the repo rather than in a scratchpad.
 | 1 | `assaygym/world.py` | hidden ground truth + the prior trap | **done**, 15 checks passing |
 | 2 | `assaygym/assay.py` | observation model — the six artifacts | **done**, 17 checks passing |
 | 3 | `assaygym/env.py` | episode loop, tool API, budget | **done**, 23 checks passing |
-| 4 | `assaygym/rewards.py` | scoring | not started |
+| 4 | `assaygym/rewards.py` | scoring — three numbers plus diagnostics | **done**, 24 checks passing |
 | 5 | `assaygym/policies.py` | four scripted baselines | not started |
 | 6 | `assaygym/llm_harness.py`, `vf_adapter.py` | Anthropic tool-use + verifiers adapter | not started |
 
@@ -531,7 +701,21 @@ and identified one provably **equivalent** mutant in `world.py`, now documented
 as such rather than rediscovered each run. See
 [CONTRIBUTING.md](CONTRIBUTING.md#mutation-testing).
 
-*Next: Phase 4, `rewards.py` — the judge.*
+**2026-08-20 — Phase 4: `rewards.py`, the judge.**
+Scoring. `strict_pass` (the headline, all-or-nothing), `endpoint` (sparse:
+hit F1 0.55, sign accuracy 0.15, EC50 0.30) and `shaped` (dense: endpoint 0.55
+plus five process terms), each a separate number, plus diagnostics that are
+computed and never summed into reward. 24 acceptance checks. Measured: a perfect
+submission on `clean` scores 1.000000 / 1.000 across 50 seeds; one flipped sign
+drops `strict_pass` 1.0 → 0.0 while `endpoint` only falls to 0.9500; the
+efficiency gate reads 0.0 at `endpoint` = 0.40 and 0.8265 one nanounit above it;
+a decoy and a plain null false positive score identically while `decoy_called`
+separates them. 37 mutation tests, all caught after one survivor forced a new
+check on the `sign_acc` denominator. Two judgment calls are documented in
+[Measured Phase 4 numbers](#measured-phase-4-numbers): the prior-parrot clears
+the efficiency gate on some seeds, and `qc_hygiene` with zero plates scores 0.0.
+
+*Next: Phase 5, `policies.py` and `verify.py` — the baselines, and the gate.*
 
 ---
 
@@ -569,10 +753,12 @@ If `prior_parrot` scores well above 0.05, something is wrong.
   domain expert should be asked for.
 - **No gene-gene interactions, no time course, no inventory or sample-tracking
   layer.**
-- **Phases 4-6 do not exist yet**, so nothing here has been shown end-to-end.
-  There is a world model, an observation model and a playable environment, but
-  **no scoring**, no baselines, and no agent has ever been run against it. Every
-  number in [What is not proven yet](#what-is-not-proven-yet) is a target.
+- **Phases 5-6 do not exist yet.** There is a world model, an observation
+  model, a playable environment and a scorer — but **no baselines have been
+  run**, so it has not been shown that the reward separates competence from
+  noise. That is the phase that would make this credible, and every number in
+  [What is not proven yet](#what-is-not-proven-yet) is a target until it runs.
+  No agent has ever been run against the environment.
 
 ---
 
@@ -584,10 +770,12 @@ assaygym/
   world.py           Phase 1 - hidden ground truth + the prior trap
   assay.py           Phase 2 - observation model, the six artifacts
   env.py             Phase 3 - episode loop, tool API, budget
+  rewards.py         Phase 4 - the judge: strict_pass, endpoint, shaped
 tests/
   test_world.py      Phase 1 acceptance suite (15 checks)
   test_assay.py      Phase 2 acceptance suite (17 checks)
   test_env.py        Phase 3 acceptance suite (23 checks)
+  test_rewards.py    Phase 4 acceptance suite (24 checks)
 tools/
   mutate.py          mutation testing: break the source, confirm the suite notices
 requirements.txt     pinned: numpy 2.5.2, pytest 9.1.1
