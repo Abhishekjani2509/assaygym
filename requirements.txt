@@ -1,0 +1,5 @@
+# AssayGym pinned dependencies.
+# Exact pins: the project's claim is that the reported numbers are reproducible,
+# so the environment that produced them is part of the artifact.
+numpy==2.5.2
+pytest==9.1.1
