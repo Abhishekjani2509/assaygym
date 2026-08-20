@@ -366,10 +366,11 @@ an RL policy could learn that the reference policy does not know.
 
 A test suite that has never failed has not been shown to test anything. So the
 source is broken on purpose, one edit at a time, and the suite is checked for
-whether it notices — `tools/mutate.py`, ~100 catalogued mutants across six
-modules, including no-op **control** mutants that must *survive* (a control that
-gets killed means the suite is flaky, which invalidates the whole run) and a
-green-baseline precondition (without it, "killed" means nothing).
+whether it notices — `tools/mutate.py`, **108 catalogued mutants** across six
+modules: 101 that must be killed (all are), and 7 no-op **control** mutants that
+must *survive* (a control that gets killed means the suite is flaky, which
+invalidates the whole run). It refuses to start unless the suite is green first,
+because otherwise "killed" means nothing.
 
 **It found three bugs that passing test suites and careful reading both missed.**
 Each was a test passing for the wrong reason.
