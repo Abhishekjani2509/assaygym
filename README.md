@@ -6,13 +6,14 @@ plates, decides what goes in every well, fights six realistic sources of assay
 artifact, and submits one answer. Grading is arithmetic, because the ground
 truth was written down before the agent existed.
 
-> **Status: Phases 1-5 of 6 complete. The ledger has landed.** The world model,
-> the observation model, the environment loop, the scoring and the four scripted
-> baselines are built and tested, with 99 passing checks and 79 mutants killed.
-> **The baseline ladder is monotone in every tier and every cell matches the
-> BUILD_SPEC acceptance table within ±0.05** — see
-> [The ledger](#the-ledger-phase-5). The LLM harness and the verifiers adapter
-> are not built yet, so no model has been run against the environment.
+> **Status: all 6 phases complete.** 116 passing checks, 101 mutants killed.
+> **The baseline ladder is monotone in every tier and all 12 cells match the
+> acceptance table within ±0.05** — see [The ledger](#the-ledger-phase-5).
+>
+> Not yet done: **no language model has been run against this.** The harness is
+> verified against stub clients only and has never made a network call. See
+> [What is not proven yet](#what-is-not-proven-yet) and
+> [DESIGN.md](DESIGN.md#9-limits-honestly).
 >
 > This README is a living document: it describes only what actually exists and
 > has been measured, and it is updated at the end of every phase. See the
@@ -66,7 +67,7 @@ python3 -m venv .venv
 ./.venv/bin/python -m pytest tests/ -q -s
 ```
 
-Expected: `99 passed`. The `-s` flag prints the measured values the checks
+Expected: `116 passed`. The `-s` flag prints the measured values the checks
 assert on, since those figures are the point.
 
 Dependencies are pinned exactly (`numpy==2.5.2`, `pytest==9.1.1`). The project's
@@ -776,21 +777,73 @@ runs **zero plates** clears the gate and banks the whole budget. Measured over
 | standard | 0.5090 | 59.5% | 0.3276 |
 | hard | 0.3886 | 37.0% | 0.2433 |
 
-This is implemented exactly as specified rather than quietly patched, and the
-behaviour is pinned by a test so it cannot drift unnoticed. It is worth being
-precise about how much it matters: the gate still achieves its stated purpose,
-because running nothing is never reward-*optimal* — the five process terms a
-do-nothing policy cannot touch are worth 0.37 of `shaped`, and a competent
-campaign on `clean` measures **0.9716** against the parrot's **0.4430**. The
-cost is that the parrot collects 0.08 it did not earn. Requiring `n_plates > 0`
-alongside the endpoint gate would close it in one line; that is a spec decision,
-not an implementation one.
+**This was measured first and fixed second.** `efficiency` now requires
+`n_plates > 0` as well as `endpoint > 0.4`, which closes it in one line and costs
+a genuine experiment nothing. The table above is the evidence for why the second
+condition is there, and it is kept rather than deleted — a prior-parrot now
+scores exactly `0.55 × endpoint` on `shaped`, with zero on all five process
+terms.
 
 The one place the spec was genuinely silent, `qc_hygiene` with **zero plates
 run**, is resolved to 0.0 rather than the literal formula's 1.0. The literal
 reading hands a do-nothing policy a free 0.12 for hygiene it never
 demonstrated — the same failure the efficiency gate exists to prevent. Process
 credit has to require process.
+
+## Running a model against it (Phase 6)
+
+```bash
+./.venv/bin/pip install anthropic     # optional; only Phase 6 needs it
+export ANTHROPIC_API_KEY=...
+```
+
+```python
+from assaygym.llm_harness import run_episode
+
+result = run_episode(seed=41, tier="hard")        # model defaults to claude-opus-5
+result.score["strict_pass"]
+result.harness      # {'model': ..., 'max_turns': 24, 'thinking': ..., ...}
+```
+
+The harness sends the briefing, executes whatever `tool_use` blocks come back,
+returns `tool_result` blocks in a single user message per turn, and loops until
+the model submits or hits `max_turns` (24). A model that never submits is forced
+to an empty submission, so a failed episode lands on the ledger as a real zero
+instead of shrinking the denominator.
+
+**It is deliberately thin, and that is a requirement rather than laziness.**
+Harness choice moves bio-agent pass rates by several points on identical tasks,
+which makes it a variable in the result — and a variable has to be reported,
+which means it has to be separable. The model, turn cap, system prompt and
+thinking config are all parameters, all recorded in `result.harness`, and none
+of them touch scoring. The API client is **injected**, so the module has no
+network dependency and no import dependency on `anthropic` (the SDK is imported
+lazily, only when nobody passed a client). That is what lets the whole harness be
+tested offline against stub clients: one that submits immediately, one that never
+submits, one that calls a tool with malformed arguments, and one that emits no
+tool call at all.
+
+### The verifiers adapter
+
+```python
+from assaygym.vf_adapter import load_environment
+
+env = load_environment(tier="hard", n_episodes=200)
+```
+
+One dataset row per seed. **The row never contains the answer** — the hidden
+world is a deterministic function of the seed, so a grader re-derives ground
+truth from `info["seed"]` at scoring time, and the truth never travels with the
+prompt.
+
+`verifiers` is imported inside a `try/except ImportError` and the module falls
+back to a plain dict carrying the dataset, the tool spec, the rubric and live
+`make_env` / `score_episode` callables — so it stays importable, testable and
+*usable* with no training stack installed. A version mismatch degrades to the
+same dict **visibly**, with `fallback_reason` saying what happened, rather than
+raising.
+
+---
 
 ## Measured Phase 5 numbers
 
@@ -843,7 +896,7 @@ in the policy's docstring so the decision can be overruled.
 | 3 | `assaygym/env.py` | episode loop, tool API, budget | **done**, 23 checks passing |
 | 4 | `assaygym/rewards.py` | scoring — three numbers plus diagnostics | **done**, 24 checks passing |
 | 5 | `assaygym/policies.py` | four scripted baselines + the ledger | **done**, 18 checks passing |
-| 6 | `assaygym/llm_harness.py`, `vf_adapter.py` | Anthropic tool-use + verifiers adapter | not started |
+| 6 | `assaygym/llm_harness.py`, `vf_adapter.py` | Anthropic tool-use + verifiers adapter | **done**, 17 checks passing |
 
 Each phase has an acceptance check that must pass before the next one starts.
 Phase 5 is the gate: if the baseline ladder is not monotone, the bug is in the
@@ -924,15 +977,33 @@ Two agreed changes to Phase 4 landed first: `efficiency` now also requires
 `n_plates > 0`, and the zero-plate `qc_hygiene` override was confirmed not to
 touch the ordinary no-bad-lot branch.
 
-*Next: Phase 6, `llm_harness.py` and `vf_adapter.py` — the interfaces.*
+**2026-08-20 — Phase 6: the interfaces, and the docs.**
+`llm_harness.py` drives the environment over the Anthropic Messages tool-use API
+— briefing in, `tool_use` executed, `tool_result` blocks back in one user message
+per turn, until submit or `max_turns = 24`, with a forced empty submission if the
+model never submits. Kept thin and injectable: the client is a parameter, the SDK
+import is lazy, and every harness setting is recorded in `result.harness`, so the
+whole thing is verified offline against four stub clients (submits immediately /
+never submits / malformed tool arguments / no tool call at all).
+`vf_adapter.py` exposes `load_environment(tier, n_episodes)` with one dataset row
+per seed and no ground truth in the row, falling back to a usable plain dict when
+`verifiers` is absent — both paths tested. 17 acceptance checks, 22 new mutants,
+all caught after two survivors forced new checks. [DESIGN.md](DESIGN.md) written.
+
+*The build is complete. The next real milestone is running a model against it.*
 
 ---
 
 ## What is not proven yet
 
-- **No language model has been run against this.** Phases 1-5 prove the
-  environment is well-posed and that the reward separates *scripted* competence
-  from noise. Whether it separates model competence is untested until Phase 6.
+- **No language model has been run against this.** The five earlier phases prove
+  the environment is well-posed and that the reward separates *scripted*
+  competence from noise. Whether it separates *model* competence is untested.
+  The harness exists and is verified against stub clients — it has never made a
+  network call.
+- **The `verifiers` integration is unverified against a real install.** The
+  fallback path is fully tested; the wrap path is guarded but has not been run
+  against the actual training stack.
 - **The artifact parameters are not calibrated** against real plate data. See
   [Limits](#limits-honestly).
 - **The reference policy is not the ceiling.** `hard/competent_doe = 0.175`
@@ -957,9 +1028,10 @@ touch the ordinary no-bad-lot branch.
   domain expert should be asked for.
 - **No gene-gene interactions, no time course, no inventory or sample-tracking
   layer.**
-- **Phase 6 does not exist yet**, so **no language model has ever been run
-  against this environment.** The ladder proves the reward separates *scripted*
-  competence from noise. Whether it separates model competence is untested.
+- **No language model has ever been run against this environment.** The ladder
+  proves the reward separates *scripted* competence from noise. Whether it
+  separates model competence is untested; the harness has never made a network
+  call. Full list in [DESIGN.md](DESIGN.md#9-limits-honestly).
 - **The reference policy is not optimal**, and the ablation table says where it
   is leaving score on the table. Treat `hard/competent_doe = 0.175` as a
   scripted baseline, not a ceiling.
@@ -976,6 +1048,8 @@ assaygym/
   env.py             Phase 3 - episode loop, tool API, budget
   rewards.py         Phase 4 - the judge: strict_pass, endpoint, shaped
   policies.py        Phase 5 - four scripted baselines + ablations
+  llm_harness.py     Phase 6 - Anthropic Messages tool-use harness
+  vf_adapter.py      Phase 6 - verifiers-spec adapter
 run_baselines.py     Phase 5 - the ledger
 verify.py            Phase 5 - determinism, exploit check, error bars
 tests/
@@ -984,10 +1058,12 @@ tests/
   test_env.py        Phase 3 acceptance suite (23 checks)
   test_rewards.py    Phase 4 acceptance suite (26 checks)
   test_policies.py   Phase 5 acceptance suite (18 checks) -- the ledger
+  test_interfaces.py Phase 6 acceptance suite (17 checks)
 tools/
   mutate.py          mutation testing: break the source, confirm the suite notices
 requirements.txt     pinned: numpy 2.5.2, pytest 9.1.1
 CONTRIBUTING.md      setup, test commands, invariants the suite enforces
+DESIGN.md            the landscape, the design move, the numbers, the limits
 ```
 
 ## Conventions

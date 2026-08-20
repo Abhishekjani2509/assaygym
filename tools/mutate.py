@@ -353,11 +353,88 @@ CATALOGUE["rewards"] = [
       "# --- 4.1 The endpoint", expect="survives"),
 ]
 
+# --- Phase 6: llm_harness.py -----------------------------------------------
+CATALOGUE["llm_harness"] = [
+    M("loop", "max_turns 24 -> 1", "MAX_TURNS = 24", "MAX_TURNS = 1"),
+    M("loop", "turn cap removed (a never-submitting model loops forever)",
+      "    while turns < max_turns and not env.done:",
+      "    while turns < max_turns * 3 and not env.done:"),
+    M("loop", "pause_turn breaks instead of resuming",
+      '        if stop_reason == "pause_turn":\n            continue',
+      '        if stop_reason == "pause_turn":\n            break'),
+    M("loop", "no tool call breaks instead of nudging",
+      '            messages.append({"role": "user", "content": NUDGE})',
+      '            break  # MUTANT'),
+    M("scoring", "forced empty submission removed (episode vanishes unscored)",
+      "        env.submit([], {}, None)\n        forced = True",
+      "        forced = True"),
+    M("tool results", "parallel tool_results split across separate messages",
+      '        messages.append({"role": "user", "content": results})',
+      '        for _r in results:\n'
+      '            messages.append({"role": "user", "content": [_r]})'),
+    M("tool results", "errors not flagged with is_error",
+      '                "is_error": is_error,\n            })',
+      '                "is_error": False,\n            })'),
+    M("tool results", "tool_use_id not echoed back",
+      '                "tool_use_id": _block_attr(use, "id", ""),',
+      '                "tool_use_id": "",'),
+    M("tool results", "failed tool calls dropped instead of reported",
+      "            results.append({",
+      "            if is_error:\n                continue\n            results.append({"),
+    M("briefing", "briefing summarised instead of passed through verbatim",
+      "        f\"{json.dumps(briefing, indent=2)}\\n\\n\"",
+      "        f\"Loci: {briefing['loci']}\\n\\n\""),
+    M("briefing", "tool list replaced with an empty list",
+      '            "tools": TOOL_SPEC,', '            "tools": [],'),
+    M("reporting", "harness settings not recorded (the variable goes unreported)",
+      '            "model": model, "max_turns": max_turns, "max_tokens": max_tokens,',
+      '            "model": "unknown", "max_turns": 0, "max_tokens": 0,'),
+    M("reporting", "non-dict tool input passed through instead of coerced",
+      "            arguments = raw_input if isinstance(raw_input, dict) else {}",
+      "            arguments = raw_input"),
+    M("control", "no-op: comment reworded", "# Claude Opus 5. Overridable",
+      "# Claude Opus 5 -- overridable", expect="survives"),
+]
+
+# --- Phase 6: vf_adapter.py -------------------------------------------------
+CATALOGUE["vf_adapter"] = [
+    M("dataset", "ground truth leaked into the answer field",
+      '            "answer": "",',
+      '            "answer": str(env.world.true_hits),'),
+    M("dataset", "seed dropped from info (grading cannot re-derive the world)",
+      '                "seed": seed,', '                "seed": 0,'),
+    M("dataset", "every row built from seed0 instead of one per seed",
+      "        seed = seed0 + i", "        seed = seed0"),
+    M("dataset", "n_episodes ignored",
+      "    for i in range(n_episodes):", "    for i in range(1):"),
+    M("fallback", "ImportError propagates instead of falling back",
+      '    except ImportError:\n        return _fallback(tier, n_episodes, seed0, '
+      '"verifiers is not installed")',
+      "    except ImportError:\n        raise"),
+    M("fallback", "version mismatch raises instead of degrading",
+      "    except (AttributeError, TypeError) as exc:",
+      "    except (AttributeError,) as exc:"),
+    M("fallback", "fallback drops the usable callables",
+      '        "make_env": make_env,\n        "score_episode": score_episode,',
+      '        "make_env": None,\n        "score_episode": None,'),
+    M("rubric", "primary metric switched from strict_pass to endpoint",
+      '    "primary": "strict_pass",', '    "primary": "endpoint",'),
+    M("rubric", "diagnostics folded into the optimised metrics",
+      '    "metrics": ["strict_pass", "endpoint", "shaped"],',
+      '    "metrics": ["strict_pass", "endpoint", "shaped", "decoy_called"],'),
+    M("control", "no-op: docstring reworded",
+      "**One dataset row per seed, and the row never contains the answer.**",
+      "**One dataset row per seed; the row never contains the answer.**",
+      expect="survives"),
+]
+
 TARGET_FILES = {
     "world": "assaygym/world.py",
     "assay": "assaygym/assay.py",
     "env": "assaygym/env.py",
     "rewards": "assaygym/rewards.py",
+    "llm_harness": "assaygym/llm_harness.py",
+    "vf_adapter": "assaygym/vf_adapter.py",
 }
 
 

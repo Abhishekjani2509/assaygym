@@ -139,6 +139,15 @@ mutant.
 - **`efficiency` is gated on `endpoint > 0.4`,** and the gate is a strict `>`.
   Ungated, banking the budget beats running the experiment. `tools/mutate.py`
   carries four mutants on that one branch.
+- **The harness is a reported variable, not a hidden one.** Harness choice moves
+  bio-agent pass rates by several points on identical tasks. Every setting that
+  could move a score is a named argument recorded in `result.harness`, the API
+  client is injected, and scoring is reached only through
+  `assaygym.rewards.score`. If you change the harness, two runs stay comparable
+  by diffing their `harness` blocks.
+- **Ground truth never travels with a dataset row.** `vf_adapter.build_dataset`
+  emits `answer: ""` and the grader re-derives the world from `info["seed"]`.
+  There is a mutant on this.
 - **Diagnostics are never summed into reward.** `decoy_called` is the direct
   measurement of prior-dependence; it has to stay reportable without the reward
   having been tuned against it. Both totals are asserted to reproduce exactly
@@ -153,9 +162,18 @@ mutant.
 | 3 | `assaygym/env.py` | `tests/test_env.py` (23 checks, passing) |
 | 4 | `assaygym/rewards.py` | `tests/test_rewards.py` (24 checks, passing) |
 | 5 | `assaygym/policies.py`, `run_baselines.py`, `verify.py` | `tests/test_policies.py` (18 checks, passing) |
-| 6 | `assaygym/llm_harness.py`, `vf_adapter.py` | not started |
+| 6 | `assaygym/llm_harness.py`, `vf_adapter.py` | `tests/test_interfaces.py` (17 checks, passing) |
 
-Each phase has an acceptance check that must pass before the next phase begins.
+All six phases are built. Each had an acceptance check that passed before the
+next began.
+
+`numpy` is the only runtime dependency for phases 1-5. Phase 6's `llm_harness`
+additionally needs `anthropic` **only to make a real API call** — the SDK is
+imported lazily, so the module imports, tests and scores without it:
+
+```bash
+./.venv/bin/pip install anthropic     # optional
+```
 
 ## Definition of done for a phase
 

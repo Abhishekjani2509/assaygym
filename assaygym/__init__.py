@@ -10,7 +10,12 @@ turns it into the noisy measurements an agent actually sees. Phase 3
 submission. Phase 4 (``rewards.py``) is the judge: three separate numbers plus
 diagnostics that are reported but never scored. Phase 5 (``policies.py``) is
 four scripted baselines whose ledger proves the reward separates competence
-from noise.
+from noise. Phase 6 is the interfaces: ``llm_harness`` (Anthropic tool-use) and
+``vf_adapter`` (the verifiers spec). Neither is imported here — ``llm_harness``
+would pull in an optional SDK dependency, and both are cheap to import directly:
+
+    from assaygym.llm_harness import run_episode
+    from assaygym.vf_adapter import load_environment
 """
 
 from assaygym.policies import (
@@ -122,4 +127,4 @@ __all__ = [
     "run_policy",
 ]
 
-__version__ = "0.5.0"
+__version__ = "1.0.0"
