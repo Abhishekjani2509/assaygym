@@ -181,6 +181,28 @@ def test_money_and_days_are_checked_independently():
     assert "days" in refused["reasons"][0] and "funds" not in refused["reasons"][0]
 
 
+def test_days_used_advances_and_stamps_every_plate():
+    """days_used is the campaign clock: +3 per plate, and it stamps day_run.
+
+    Found by tools/mutate.py: pinning only that a *refusal* leaves days_used
+    alone never checked that a successful plate advances it, so freezing the
+    clock at 0 passed the whole suite while making every plate look
+    simultaneous.
+    """
+    env = AssayGym(12, "hard")
+    env.reset()
+    assert env.days_used == 0
+    for i in range(3):
+        res = env.design_and_run(_layout(20), "LOT-A")
+        assert res["day_run"] == 3 * i, res
+        assert env.plates[res["plate_id"]].day_run == 3 * i
+        assert env.days_used == 3 * (i + 1)
+        assert env.days_used + env.days_left == 9  # the clock conserves
+    print(f"[measured] campaign clock: day_run stamps = "
+          f"{[p.day_run for p in env.plates.values()]}, "
+          f"days_used = {env.days_used}, days_left = {env.days_left}")
+
+
 def test_budget_boundary_is_inclusive():
     """A plate you can exactly afford is allowed; one dollar more is not."""
     env = AssayGym(3, "clean")

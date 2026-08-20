@@ -9,7 +9,7 @@ truth was written down before the agent existed.
 > **Status: Phases 1-3 of 6 complete.** The world model (hidden ground truth
 > plus the prior trap), the observation model (six assay artifacts) and the
 > environment loop (budget, four tools, one submission) are built and tested,
-> with 54 passing checks. Scoring, baselines and the LLM harness are **not
+> with 55 passing checks. Scoring, baselines and the LLM harness are **not
 > built yet** — nothing has been scored and no agent has been run.
 >
 > This README is a living document: it describes only what actually exists and
@@ -64,7 +64,7 @@ python3 -m venv .venv
 ./.venv/bin/python -m pytest tests/ -q -s
 ```
 
-Expected: `54 passed`. The `-s` flag prints the measured values the checks
+Expected: `55 passed`. The `-s` flag prints the measured values the checks
 assert on, since those figures are the point.
 
 Dependencies are pinned exactly (`numpy==2.5.2`, `pytest==9.1.1`). The project's
@@ -447,21 +447,28 @@ measured from a real run.
 | env noise vs `default_rng(seed)` | must differ | mean \|diff\| **0.3557** over 51 wells |
 | consecutive plates, same layout + lot | must differ | mean \|diff\| **0.1515** |
 
-Confirmed by **mutation testing**: 29 deliberate breaks of `env.py` — budget
-arithmetic (14), the post-submit guard (6), the rng separation (5), and the
-caveat and error paths (4) — were injected one at a time and the suite caught
-every one.
+Confirmed by **mutation testing** (`tools/mutate.py`): 29 deliberate breaks of
+`env.py` — budget arithmetic (14), the post-submit guard (6), the rng separation
+(5), and the caveat and error paths (4) — plus a no-op control that must
+survive. All 29 are now caught.
 
-One mutant survived the first suite: re-creating the assay rng inside
-`design_and_run`, so every plate in an episode receives *identical* noise. The
-determinism test should have caught it and did not, because it compared two
-plates run on **different reagent lots** — the potency difference alone made the
-values differ and masked the repeated noise. The fix was to reproduce two
-consecutive plates from a single external generator and to compare same-lot
-plates, which pins stream continuity rather than mere inequality. This is the
-second time in this project that a test passed for the wrong reason and only
-mutation testing exposed it; the first was the pipetting/batch ordering in
-Phase 2.
+Two survived the first suite, and both were tests passing for the wrong reason:
+
+- **The assay rng re-created inside `design_and_run`**, so every plate in an
+  episode receives *identical* noise. The determinism test compared two plates
+  run on **different reagent lots** — the potency difference alone made the
+  values differ and masked the repeated noise. Fixed by reproducing two
+  consecutive plates from a single external generator and comparing same-lot
+  plates, which pins stream *continuity* rather than mere inequality.
+- **`days_used` frozen at 0**, so every plate reports `day_run = 0` and the
+  campaign looks simultaneous. The suite pinned only that a *refusal* leaves the
+  clock alone; nothing asserted that a successful plate advances it. Fixed by
+  `test_days_used_advances_and_stamps_every_plate`.
+
+The second was found only when the harness was promoted out of a scratch
+directory into `tools/mutate.py` and re-run over every phase; the original
+session-scoped run mis-reported it as caught. That is the argument for the
+harness being in the repo rather than in a scratchpad.
 
 ---
 
@@ -471,7 +478,7 @@ Phase 2.
 |---|---|---|---|
 | 1 | `assaygym/world.py` | hidden ground truth + the prior trap | **done**, 15 checks passing |
 | 2 | `assaygym/assay.py` | observation model — the six artifacts | **done**, 17 checks passing |
-| 3 | `assaygym/env.py` | episode loop, tool API, budget | **done**, 22 checks passing |
+| 3 | `assaygym/env.py` | episode loop, tool API, budget | **done**, 23 checks passing |
 | 4 | `assaygym/rewards.py` | scoring | not started |
 | 5 | `assaygym/policies.py` | four scripted baselines | not started |
 | 6 | `assaygym/llm_harness.py`, `vf_adapter.py` | Anthropic tool-use + verifiers adapter | not started |
@@ -511,9 +518,18 @@ are driven by one list. Two separate rngs: `default_rng(seed)` for the world,
 acceptance checks. Measured: a 51-well plate costs exactly $1,041, the hard tier
 buys exactly three of them and refuses the fourth on both money and days, 25
 `qc()` calls move nothing, and all five post-submit calls are refused with
-byte-identical state. 29 mutation tests, all caught — one after the suite was
-strengthened; see
-[Measured Phase 3 numbers](#measured-phase-3-numbers).
+byte-identical state. 29 mutation tests, all caught after two survivors forced
+new checks; see [Measured Phase 3 numbers](#measured-phase-3-numbers).
+
+**2026-08-20 — Housekeeping: `tools/mutate.py`.**
+The mutation harness promoted out of a session scratch directory into the repo,
+generalised across `world.py`, `assay.py` and `env.py`, with a catalogue of 44
+mutants, no-op control mutants that must survive, a green-baseline precondition,
+and guaranteed restore. Re-running it over every phase immediately found a gap
+the session-scoped version had mis-reported as caught (`days_used` frozen at 0)
+and identified one provably **equivalent** mutant in `world.py`, now documented
+as such rather than rediscovered each run. See
+[CONTRIBUTING.md](CONTRIBUTING.md#mutation-testing).
 
 *Next: Phase 4, `rewards.py` — the judge.*
 
@@ -571,7 +587,9 @@ assaygym/
 tests/
   test_world.py      Phase 1 acceptance suite (15 checks)
   test_assay.py      Phase 2 acceptance suite (17 checks)
-  test_env.py        Phase 3 acceptance suite (22 checks)
+  test_env.py        Phase 3 acceptance suite (23 checks)
+tools/
+  mutate.py          mutation testing: break the source, confirm the suite notices
 requirements.txt     pinned: numpy 2.5.2, pytest 9.1.1
 CONTRIBUTING.md      setup, test commands, invariants the suite enforces
 ```
