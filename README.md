@@ -6,9 +6,10 @@ plates, decides what goes in every well, fights six realistic sources of assay
 artifact, and submits one answer. Grading is arithmetic, because the ground
 truth was written down before the agent existed.
 
-> **Status: Phase 1 of 6 complete.** The world model — hidden ground truth plus
-> the prior trap — is built and tested, with 15 passing checks. The assay,
-> environment, scoring, baselines and LLM harness are **not built yet**.
+> **Status: Phases 1-2 of 6 complete.** The world model (hidden ground truth
+> plus the prior trap) and the observation model (six assay artifacts) are built
+> and tested, with 32 passing checks. The environment loop, scoring, baselines
+> and LLM harness are **not built yet**.
 >
 > This README is a living document: it describes only what actually exists and
 > has been measured, and it is updated at the end of every phase. See the
@@ -62,7 +63,7 @@ python3 -m venv .venv
 ./.venv/bin/python -m pytest tests/ -q -s
 ```
 
-Expected: `15 passed`. The `-s` flag prints the measured values the checks
+Expected: `32 passed`. The `-s` flag prints the measured values the checks
 assert on, since those figures are the point.
 
 Dependencies are pinned exactly (`numpy==2.5.2`, `pytest==9.1.1`). The project's
@@ -227,6 +228,31 @@ gray-starved tier to cover the fallback path.
 Determinism holds: the same seed twice produces identical `true_hits`,
 `true_signs`, `true_log_ec50`, `true_delta` and network.
 
+## Measured Phase 2 numbers
+
+All figures below are measured from real runs. Where an analytic expectation
+exists it is named as such alongside, never in place of a measurement.
+
+| check | analytic expectation | measured |
+|---|---|---|
+| degraded-lot window ratio (potency 0.4) | 0.400 | **0.3984 ± 0.0012** (SE, n=400 paired plates) |
+| same, full noise + contamination live | 0.400 | **0.4015 ± 0.0022** (SE, n=400) |
+| same, noise-free | 0.400 | **0.400000** (exact) |
+| contaminated-quadrant offset | 0.45 | **0.4509 ± 0.0023** (SE, n=400 plates) |
+| contamination rate, standard | 0.25 | **0.2477 ± 0.0031** (SE, n=20,000 plates) |
+| zero-noise passthrough error | 0 | **0.0** exactly, all 96 wells |
+| edge minus interior, noise-free | 0.10 | **0.100000** |
+| batch: per-well spread of plate difference | 0 | **1.7e-16** |
+| batch: sd of the offset itself | 0.1697 | **0.1700** (n=200 plate pairs) |
+| pipetting scatter, sd/mean | 0.05 both | **0.0500** (NTC), **0.0499** (POS) |
+
+Two structural checks worth calling out. Within-plate scatter between two plates
+measures **0.1051** against **0.1058** predicted if the batch shift is per-plate,
+and **0.2000** if it were per-well — so the batch term provably does not leak
+into per-well variance. And the correlation between a plate's mean and its
+internal spread is **-0.0267**, where the inverted pipetting/batch order would
+drive it to roughly +1.
+
 ---
 
 ## Build status
@@ -234,7 +260,7 @@ Determinism holds: the same seed twice produces identical `true_hits`,
 | phase | file | what it does | status |
 |---|---|---|---|
 | 1 | `assaygym/world.py` | hidden ground truth + the prior trap | **done**, 15 checks passing |
-| 2 | `assaygym/assay.py` | observation model — the six artifacts | not started |
+| 2 | `assaygym/assay.py` | observation model — the six artifacts | **done**, 17 checks passing |
 | 3 | `assaygym/env.py` | episode loop, tool API, budget | not started |
 | 4 | `assaygym/rewards.py` | scoring | not started |
 | 5 | `assaygym/policies.py` | four scripted baselines | not started |
@@ -257,16 +283,47 @@ decoys and hit omission. 15 acceptance checks, all passing; measured figures in
 [Measured Phase 1 numbers](#measured-phase-1-numbers). Environment pinned
 in-repo and verified from a clean clone.
 
-*Next: Phase 2, `assay.py` — the six artifacts that stand between the truth and
-what the agent gets to see.*
+**2026-08-20 — Phase 2: `assay.py`, the dirty window.**
+The observation model. `run_plate` applies the six artifacts in a fixed order,
+plus geometry helpers (`is_edge`, `quadrant`) and `z_prime`. 17 acceptance
+checks. Measured: a degraded lot (potency 0.4) shrinks the assay window to
+**0.3984 ± 0.0012** of the same plate on a good lot; contaminated quadrants sit
+**0.4509 ± 0.0023** above identical conditions elsewhere; zero-noise passthrough
+is bit-exact. Verified by mutation testing that the suite catches all six
+plausible ordering bugs — see [The six artifacts](#the-six-artifacts).
 
-The six artifacts arriving in Phase 2 — batch offsets, edge evaporation,
-degraded reagent lots, contaminated quadrants, pipetting error, measurement
-noise — each exist to punish one specific missing skill. Degraded lots multiply
-the *effect* rather than the baseline, so a bad-lot plate looks flat and the
-only tell is a collapsed positive-control window, which punishes an agent that
-never runs positive controls. Contamination is per-quadrant, which punishes an
-agent that bunches all its controls in one corner.
+*Next: Phase 3, `env.py` — the episode loop, tool API and budget.*
+
+### The six artifacts
+
+Each exists to punish one specific missing experimental skill. An artifact that
+punishes nothing is just noise, and noise alone makes the task harder without
+making it more diagnostic.
+
+| # | artifact | punishes |
+|---|---|---|
+| 1 | reagent lot potency | never running positive controls |
+| 2 | pipetting error (multiplicative) | trusting a single well instead of replicating |
+| 3 | batch shift (once per plate) | comparing across plates without an on-plate control |
+| 4 | edge bias | filling the plate from A1 |
+| 5 | contamination (one quadrant) | bunching all controls in one corner |
+| 6 | measurement noise | reading one well as truth |
+
+**The application order is load-bearing.** Lot potency multiplies the *effect
+above baseline*, not the raw value, so a degraded lot shrinks the assay window
+rather than translating the plate — the collapsed positive-control window is the
+only signal an agent has that anything is wrong. Pipetting error is
+multiplicative and lands *before* the additive batch shift, which keeps a
+per-plate offset separable from per-well scatter; inverted, it would scale the
+batch offset too and couple the two.
+
+Both errors would leave the observations superficially plausible while
+destroying what the agent can detect, so the suite pins the order down
+explicitly rather than trusting it. Confirmed by mutation testing: making the
+lot multiply the raw value, moving pipetting after the batch shift, drawing the
+batch shift or the contaminated quadrant per well, making pipetting additive, or
+inverting the edge test each break at least one test, while a no-op control
+change correctly breaks none.
 
 ---
 
@@ -314,8 +371,10 @@ If `prior_parrot` scores well above 0.05, something is wrong.
 assaygym/
   __init__.py
   world.py           Phase 1 - hidden ground truth + the prior trap
+  assay.py           Phase 2 - observation model, the six artifacts
 tests/
   test_world.py      Phase 1 acceptance suite (15 checks)
+  test_assay.py      Phase 2 acceptance suite (17 checks)
 requirements.txt     pinned: numpy 2.5.2, pytest 9.1.1
 CONTRIBUTING.md      setup, test commands, invariants the suite enforces
 ```

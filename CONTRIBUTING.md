@@ -58,7 +58,8 @@ so the commands are correct whether or not the venv is active.
 | phase | file | tests |
 |---|---|---|
 | 1 | `assaygym/world.py` | `tests/test_world.py` (15 checks, passing) |
-| 2 | `assaygym/assay.py` | not started |
+| 2 | `assaygym/assay.py` | `tests/test_assay.py` (17 checks, passing) |
+| 3 | `assaygym/env.py` | not started |
 
 Each phase has an acceptance check that must pass before the next phase begins.
 
