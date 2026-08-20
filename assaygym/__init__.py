@@ -5,9 +5,22 @@ The biology is a deliberate caricature over invented loci (``SYN01``, ``SYN02``,
 realism.
 
 Phase 1 (``world.py``) samples the hidden ground truth. Phase 2 (``assay.py``)
-turns it into the noisy measurements an agent actually sees.
+turns it into the noisy measurements an agent actually sees. Phase 3
+(``env.py``) is the lab bench the agent operates: budget, four tools, one
+submission.
 """
 
+from assaygym.env import (
+    ASSAY_RNG_OFFSET,
+    LOTS,
+    PER_WELL_COST,
+    PLATE_BASE_COST,
+    PLATE_DAYS,
+    PRIOR_CAVEAT,
+    TOOL_SPEC,
+    AssayGym,
+    plate_cost,
+)
 from assaygym.assay import (
     COLS,
     ROWS,
@@ -44,6 +57,16 @@ __all__ = [
     "quadrant",
     "run_plate",
     "z_prime",
+    # env (Phase 3)
+    "AssayGym",
+    "TOOL_SPEC",
+    "PRIOR_CAVEAT",
+    "PLATE_BASE_COST",
+    "PER_WELL_COST",
+    "PLATE_DAYS",
+    "LOTS",
+    "ASSAY_RNG_OFFSET",
+    "plate_cost",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

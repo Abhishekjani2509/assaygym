@@ -6,10 +6,11 @@ plates, decides what goes in every well, fights six realistic sources of assay
 artifact, and submits one answer. Grading is arithmetic, because the ground
 truth was written down before the agent existed.
 
-> **Status: Phases 1-2 of 6 complete.** The world model (hidden ground truth
-> plus the prior trap) and the observation model (six assay artifacts) are built
-> and tested, with 32 passing checks. The environment loop, scoring, baselines
-> and LLM harness are **not built yet**.
+> **Status: Phases 1-3 of 6 complete.** The world model (hidden ground truth
+> plus the prior trap), the observation model (six assay artifacts) and the
+> environment loop (budget, four tools, one submission) are built and tested,
+> with 54 passing checks. Scoring, baselines and the LLM harness are **not
+> built yet** — nothing has been scored and no agent has been run.
 >
 > This README is a living document: it describes only what actually exists and
 > has been measured, and it is updated at the end of every phase. See the
@@ -63,7 +64,7 @@ python3 -m venv .venv
 ./.venv/bin/python -m pytest tests/ -q -s
 ```
 
-Expected: `32 passed`. The `-s` flag prints the measured values the checks
+Expected: `54 passed`. The `-s` flag prints the measured values the checks
 assert on, since those figures are the point.
 
 Dependencies are pinned exactly (`numpy==2.5.2`, `pytest==9.1.1`). The project's
@@ -228,6 +229,102 @@ fewer than two of either control.
 
 ---
 
+## What Phase 3 gives you
+
+`assaygym/env.py` is the lab bench: the only object the agent ever touches. It
+owns the budget, hands out the briefing, exposes four tools, and refuses
+anything it cannot pay for.
+
+```python
+from assaygym import AssayGym
+
+env = AssayGym(41, "hard")
+brief = env.reset()
+
+brief["budget"]                              # {'usd': 3300.0, 'days': 9}
+brief["literature_prior"]["previously_reported_hits"]
+brief["literature_prior"]["caveat"]          # the trap is disclosed, always
+
+layout = {f"{r}{c}": "NTC" for r in "BCDEFG" for c in range(2, 12)}
+res = env.design_and_run(dict(list(layout.items())[:51]), lot="LOT-A")
+res["cost_usd"], res["usd_left"], res["days_left"]   # 1041.0, 2259.0, 6
+
+env.qc("P1")                                 # free: no money, no days
+env.exclude_plate("P1", "assay window collapsed")
+env.submit(hits=["SYN03"], signs={"SYN03": -1}, log_ec50=2.4)   # one shot
+```
+
+Every tool returns a plain dict, and every failure comes back as
+`{"error": ...}` rather than as an exception — the same methods are driven by an
+LLM over the tool-use API in Phase 6, where a refusal is information the model
+should get to act on rather than a crash.
+
+### The four tools
+
+| tool | costs | does |
+|---|---|---|
+| `design_and_run(layout, lot)` | `$480 + $11/well`, 3 days | runs one 96-well plate |
+| `qc(plate_id)` | **free** | control counts and means, assay window, Z-prime |
+| `exclude_plate(plate_id, reason)` | free, no refund | drops a plate from analysis |
+| `submit(hits, signs, log_ec50)` | free | **one shot**; ends the episode |
+
+`TOOL_SPEC` exports these in Anthropic tool-use format (`name`, `description`,
+`input_schema`). One list drives both the LLM harness and the verifiers adapter
+in Phase 6 — if those two ever disagree they are running different environments
+and no number from either is comparable.
+
+### Three decisions in this phase that are load-bearing
+
+**Two separate rngs.** World generation draws from `default_rng(seed)` and is
+fully consumed before the first plate is run; assay noise draws from an
+independent `default_rng(seed + 10_000)`. So *which world was sampled* is a
+function of the seed alone — not of how many plates the agent ran, how many
+wells it filled, or what it put in them. That is what will make the Phase 5
+ledger a comparison between policies rather than between the different worlds
+each policy accidentally conjured. Measured: two episodes on seed 41 running
+completely different campaigns (2 plates vs 1, different layouts, different
+lots) sample bit-identical `true_hits`, `true_delta`, `true_log_ec50`,
+`lot_potency` and `reported_hits`.
+
+**`qc()` is free.** No money, no days, callable as often as you like. If an
+agent skips quality control that must be a **judgment failure** we can score,
+not a budget constraint we imposed on it. Charging for QC would confound "did
+not think to check the assay window" with "could not afford to". Measured: 25
+consecutive `qc()` calls leave the budget, the plate records and the assay-noise
+stream state byte-identical.
+
+**The prior caveat ships with the prior.** The briefing states in so many words
+that the reported hits come from a different cell background and may be
+incomplete or wrong. Without it the trap is entrapment and the score measures
+nothing; with it, trusting the prior is a choice the agent made. The suite
+asserts the caveat text is present on all three tiers.
+
+### The budget is a real allocation decision
+
+The hard tier is $3,300 and 9 days. A 51-well plate costs exactly
+`480 + 11 x 51 = $1,041` and takes 3 days, so the tier buys **exactly three**:
+
+| plate | cost | usd left | days left |
+|---|---|---|---|
+| 1 | $1,041 | $2,259 | 6 |
+| 2 | $1,041 | $1,218 | 3 |
+| 3 | $1,041 | $177 | 0 |
+| 4 | — | **refused on both money and days** | |
+
+Money and days are checked **independently**, and both binding constraints are
+reported. The suite pins both single-constraint cases too, since a check that
+only ever fires when both bind would hide a missing one: on `clean`, five
+51-well plates leave $795 and 3 days (money-only refusal), and six 1-well plates
+leave $3,054 and 0 days (days-only refusal).
+
+A refusal is free. So is an invalid plate: wells and conditions are validated
+before any budget moves, so a malformed layout is never billed. Measured across
+8 invalid calls — empty layout, off-plate well, out-of-range column, unknown
+condition, unknown locus, unparseable dose, non-string condition, unknown lot —
+the budget, the plate list and the rng state are untouched.
+
+---
+
 ## Four design decisions that are load-bearing
 
 Each of these guards a specific failure mode that makes the environment stop
@@ -330,6 +427,42 @@ into per-well variance. And the correlation between a plate's mean and its
 internal spread is **-0.0267**, where the inverted pipetting/batch order would
 drive it to roughly +1.
 
+## Measured Phase 3 numbers
+
+Arithmetic figures are exact and are marked **analytic**; everything else is
+measured from a real run.
+
+| check | expectation | result |
+|---|---|---|
+| 51-well plate cost | analytic `480 + 11x51` | **$1,041.00** exactly |
+| hard tier, plate 3 leaves | analytic `3300 - 3x1041` | **$177.00**, 0 days |
+| hard tier, plate 4 | refused on both constraints | **2 reasons reported** (funds + days) |
+| clean tier, money-only refusal | 1 reason | **$795 left, 3 days left** |
+| clean tier, days-only refusal | 1 reason | **$3,054 left, 0 days left** |
+| 25 `qc()` calls | budget unchanged | **$3,459 -> $3,459, 9 -> 9 days**, full state identical |
+| post-submit calls (5 tools) | error, no mutation | **5/5 refused**, state byte-identical |
+| `exclude_plate` on 7 bad ids | error, no mutation | **7/7 refused**, 0 excluded |
+| 8 invalid `design_and_run` calls | refused before billing | **8/8**, budget untouched |
+| same seed, different campaigns | identical world | **bit-identical** on 14 hidden fields |
+| env noise vs `default_rng(seed)` | must differ | mean \|diff\| **0.3557** over 51 wells |
+| consecutive plates, same layout + lot | must differ | mean \|diff\| **0.1515** |
+
+Confirmed by **mutation testing**: 29 deliberate breaks of `env.py` — budget
+arithmetic (14), the post-submit guard (6), the rng separation (5), and the
+caveat and error paths (4) — were injected one at a time and the suite caught
+every one.
+
+One mutant survived the first suite: re-creating the assay rng inside
+`design_and_run`, so every plate in an episode receives *identical* noise. The
+determinism test should have caught it and did not, because it compared two
+plates run on **different reagent lots** — the potency difference alone made the
+values differ and masked the repeated noise. The fix was to reproduce two
+consecutive plates from a single external generator and to compare same-lot
+plates, which pins stream continuity rather than mere inequality. This is the
+second time in this project that a test passed for the wrong reason and only
+mutation testing exposed it; the first was the pipetting/batch ordering in
+Phase 2.
+
 ---
 
 ## Build status
@@ -338,7 +471,7 @@ drive it to roughly +1.
 |---|---|---|---|
 | 1 | `assaygym/world.py` | hidden ground truth + the prior trap | **done**, 15 checks passing |
 | 2 | `assaygym/assay.py` | observation model — the six artifacts | **done**, 17 checks passing |
-| 3 | `assaygym/env.py` | episode loop, tool API, budget | not started |
+| 3 | `assaygym/env.py` | episode loop, tool API, budget | **done**, 22 checks passing |
 | 4 | `assaygym/rewards.py` | scoring | not started |
 | 5 | `assaygym/policies.py` | four scripted baselines | not started |
 | 6 | `assaygym/llm_harness.py`, `vf_adapter.py` | Anthropic tool-use + verifiers adapter | not started |
@@ -369,7 +502,20 @@ checks. Measured: a degraded lot (potency 0.4) shrinks the assay window to
 is bit-exact. Verified by mutation testing that the suite catches all six
 plausible ordering bugs — see [The six artifacts](#the-six-artifacts).
 
-*Next: Phase 3, `env.py` — the episode loop, tool API and budget.*
+**2026-08-20 — Phase 3: `env.py`, the lab bench.**
+The episode loop. `AssayGym(seed, tier)` with `reset()`, the briefing, and the
+four tools (`design_and_run`, `qc`, `exclude_plate`, `submit`), plus `TOOL_SPEC`
+in Anthropic tool-use format so the Phase 6 harness and the verifiers adapter
+are driven by one list. Two separate rngs: `default_rng(seed)` for the world,
+`default_rng(seed + 10_000)` for assay noise. `qc()` is free by design. 22
+acceptance checks. Measured: a 51-well plate costs exactly $1,041, the hard tier
+buys exactly three of them and refuses the fourth on both money and days, 25
+`qc()` calls move nothing, and all five post-submit calls are refused with
+byte-identical state. 29 mutation tests, all caught — one after the suite was
+strengthened; see
+[Measured Phase 3 numbers](#measured-phase-3-numbers).
+
+*Next: Phase 4, `rewards.py` — the judge.*
 
 ---
 
@@ -407,9 +553,10 @@ If `prior_parrot` scores well above 0.05, something is wrong.
   domain expert should be asked for.
 - **No gene-gene interactions, no time course, no inventory or sample-tracking
   layer.**
-- **Phases 3-6 do not exist yet**, so nothing here has been shown end-to-end.
-  There is a world model and an observation model, but no episode loop, no
-  scoring, and no agent has ever been run against it.
+- **Phases 4-6 do not exist yet**, so nothing here has been shown end-to-end.
+  There is a world model, an observation model and a playable environment, but
+  **no scoring**, no baselines, and no agent has ever been run against it. Every
+  number in [What is not proven yet](#what-is-not-proven-yet) is a target.
 
 ---
 
@@ -420,16 +567,20 @@ assaygym/
   __init__.py
   world.py           Phase 1 - hidden ground truth + the prior trap
   assay.py           Phase 2 - observation model, the six artifacts
+  env.py             Phase 3 - episode loop, tool API, budget
 tests/
   test_world.py      Phase 1 acceptance suite (15 checks)
   test_assay.py      Phase 2 acceptance suite (17 checks)
+  test_env.py        Phase 3 acceptance suite (22 checks)
 requirements.txt     pinned: numpy 2.5.2, pytest 9.1.1
 CONTRIBUTING.md      setup, test commands, invariants the suite enforces
 ```
 
 ## Conventions
 
-- All randomness flows from a single `np.random.default_rng(seed)`. Same seed,
-  same score, always. This is tested.
+- All randomness flows from `np.random.default_rng`. Same seed, same score,
+  always. This is tested. An episode uses exactly two generators, deliberately
+  independent: `default_rng(seed)` for world generation and
+  `default_rng(seed + 10_000)` for assay noise.
 - Loci are synthetic (`SYN01`, `SYN02`, …). Never real gene names.
 - Plates are 96-well: rows `A`-`H`, columns `1`-`12`, wells like `"C7"`.

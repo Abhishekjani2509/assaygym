@@ -52,6 +52,13 @@ so the commands are correct whether or not the venv is active.
 - **Dependencies are pinned exactly** in `requirements.txt`. If you bump one,
   re-run the full suite and the Phase 5 baseline ladder, since the numbers are
   rng-ordering sensitive.
+- **World generation and assay noise use two separate rngs** —
+  `default_rng(seed)` and `default_rng(seed + 10_000)`. `tests/test_env.py`
+  pins the offset and the stream continuity. Collapsing them would make the
+  sampled world a function of the agent's plate layouts, and the Phase 5 ledger
+  would stop being a comparison between policies.
+- **`qc()` is free and must stay free.** Skipping QC has to be a judgment
+  failure we can score, not a budget constraint we imposed.
 
 ## Phase status
 
@@ -59,7 +66,8 @@ so the commands are correct whether or not the venv is active.
 |---|---|---|
 | 1 | `assaygym/world.py` | `tests/test_world.py` (15 checks, passing) |
 | 2 | `assaygym/assay.py` | `tests/test_assay.py` (17 checks, passing) |
-| 3 | `assaygym/env.py` | not started |
+| 3 | `assaygym/env.py` | `tests/test_env.py` (22 checks, passing) |
+| 4 | `assaygym/rewards.py` | not started |
 
 Each phase has an acceptance check that must pass before the next phase begins.
 
