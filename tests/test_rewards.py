@@ -347,16 +347,15 @@ def test_do_nothing_policy_gets_no_process_credit():
 def test_prior_parrot_earns_no_experimental_credit():
     """The published failure mode: submit the literature verbatim, run nothing.
 
-    It earns exactly zero on every term that requires a plate to have existed.
-    It does NOT earn zero on efficiency: the gate is on `endpoint > 0.4`, and
-    the spec itself notes that a prior-parrot scores 0.4-0.67 on endpoint, so on
-    the seeds where the literature happens to be good enough it clears the gate
-    and banks the unspent budget. Measured below, and recorded here rather than
-    assumed away -- see the README for the size of the hole and the one-line
-    tightening that would close it.
+    It earns exactly zero on every shaped term, including efficiency.
 
-    The gate still does its job: running nothing is never reward-*optimal*,
-    because the five process terms it cannot touch are worth 0.37 of shaped.
+    Efficiency is the one that took two conditions to get right. Gated on
+    `endpoint > 0.4` alone, this policy clears the gate on 100% of `clean`
+    seeds -- the spec itself notes a prior-parrot scores 0.4-0.67 on endpoint --
+    and banks the whole budget for an experiment it never ran. The `n_plates > 0`
+    condition closes that. The rates it used to clear at are measured below and
+    kept in the report, because they are the evidence for why the second
+    condition is there.
     """
     rates = {}
     for tier in ("clean", "standard", "hard"):
@@ -372,19 +371,21 @@ def test_prior_parrot_earns_no_experimental_credit():
             assert t["controls"] == 0.0 and t["replication"] == 0.0
             assert t["self_normalizable"] == 0.0 and t["qc_hygiene"] == 0.0
             assert res["diagnostics"]["n_plates"] == 0
-            # efficiency is either 0 (gated out) or 1 (nothing spent).
-            assert t["efficiency"] in (0.0, 1.0)
-            assert (t["efficiency"] == 1.0) == (res["endpoint"] > EFFICIENCY_GATE)
+            # No plates run: efficiency is zero regardless of endpoint.
+            assert t["efficiency"] == 0.0
+            assert res["shaped"] == pytest.approx(0.55 * res["endpoint"])
             endpoints.append(res["endpoint"])
-            efficiencies.append(t["efficiency"])
+            # What an endpoint-only gate would have paid, for the record.
+            efficiencies.append(1.0 if res["endpoint"] > EFFICIENCY_GATE else 0.0)
             shapes.append(res["shaped"])
         rates[tier] = (float(np.mean(endpoints)), float(np.mean(efficiencies)),
                        float(np.mean(shapes)))
 
     print("[measured] prior-parrot (zero plates), 200 seeds per tier:")
     for tier, (ep, eff, sh) in rates.items():
-        print(f"             {tier:9s} endpoint {ep:.4f}  clears the gate "
-              f"{100 * eff:5.1f}% of seeds  shaped {sh:.4f}")
+        print(f"             {tier:9s} endpoint {ep:.4f}  shaped {sh:.4f}  "
+              f"(an endpoint-only gate would have paid efficiency on "
+              f"{100 * eff:5.1f}% of seeds)")
 
     # The comparison that matters: doing the work dominates, on every tier.
     env = _run_env(0, "clean", n_plates=3)
@@ -417,8 +418,9 @@ def test_efficiency_is_gated_on_endpoint():
     assert above["efficiency"] == pytest.approx(unspent)
 
     # Spending nothing pays the full fraction, but only once the answer is good.
-    assert shaped_terms(w, [], _perfect(w), 0.0, 6000.0, 1.0)["efficiency"] == 1.0
-    assert shaped_terms(w, [], _perfect(w), 0.0, 6000.0, 0.0)["efficiency"] == 0.0
+    free = [_plate("P1", _good_layout(w.genes), cost=0.0)]
+    assert shaped_terms(w, free, _perfect(w), 0.0, 6000.0, 1.0)["efficiency"] == 1.0
+    assert shaped_terms(w, free, _perfect(w), 0.0, 6000.0, 0.0)["efficiency"] == 0.0
 
 
 def test_one_sign_flip_straddles_the_efficiency_gate():
@@ -446,19 +448,64 @@ def test_one_sign_flip_straddles_the_efficiency_gate():
     assert eff_w == 0.0 and eff_r > 0.0
 
 
+def test_efficiency_also_requires_a_plate_to_have_been_run():
+    """The endpoint gate alone lets a zero-plate policy bank the budget.
+
+    A perfect answer with no plates would otherwise collect the full unspent
+    fraction. Both conditions are needed and each is checked on its own.
+    """
+    w = _world(3, "clean")
+    plates = [_plate("P1", _good_layout(w.genes))]
+
+    no_plates = shaped_terms(w, [], _perfect(w), 0.0, 6000.0, 1.0)
+    with_plate = shaped_terms(w, plates, _perfect(w), 1041.0, 6000.0, 1.0)
+    print(f"[measured] perfect answer, zero plates: efficiency = "
+          f"{no_plates['efficiency']:.4f}; one plate run: "
+          f"{with_plate['efficiency']:.4f}")
+    assert no_plates["efficiency"] == 0.0     # n_plates gate
+    assert with_plate["efficiency"] > 0.0
+
+    # An excluded plate still counts as a plate that was paid for and run.
+    excluded = [_plate("P1", _good_layout(w.genes), excluded=True)]
+    assert shaped_terms(w, excluded, _perfect(w), 1041.0, 6000.0, 1.0)["efficiency"] > 0.0
+
+
+def test_zero_plate_override_touches_only_the_zero_plate_case():
+    """qc_hygiene: no plates -> 0.0, but plates with no bad lot -> caught = 1.0.
+
+    The override must not bleed into the ordinary no-bad-lot branch, which has
+    to keep reducing to a pure over-exclusion penalty.
+    """
+    w = _world(3, "clean")
+    assert w.bad_lots == []
+    layout = _good_layout(w.genes)
+
+    def hyg(plates):
+        return shaped_terms(w, plates, _perfect(w), 0.0, 6000.0, 1.0)["qc_hygiene"]
+
+    assert hyg([]) == 0.0                                        # the override
+    assert hyg([_plate("P1", layout)]) == 1.0                    # caught = 1.0
+    assert hyg([_plate("P1", layout, excluded=True)]) == 0.0     # 1 - 1/1
+    three = [_plate(f"P{i}", layout) for i in range(1, 4)]
+    assert hyg(three) == 1.0
+    print("[measured] qc_hygiene: 0 plates -> 0.0; 1 good plate kept -> 1.0; "
+          "1 good plate excluded -> 0.0; 3 good plates kept -> 1.0")
+
+
 def test_running_nothing_is_not_reward_optimal():
     """Without the gate, banking the budget would beat doing the experiment."""
     w = _world(3, "clean")
     layout = _good_layout(w.genes)
     plates = [_plate(f"P{i}", layout) for i in range(1, 4)]
 
-    do_nothing = shaped_terms(w, [], {"hits": [], "signs": {}, "log_ec50": None},
-                              0.0, 6000.0, 0.0)
+    do_nothing = shaped_terms(w, [], _perfect(w), 0.0, 6000.0, 1.0)
     did_the_work = shaped_terms(w, plates, _perfect(w), 3 * 1041.0, 6000.0, 1.0)
     print(f"[measured] shaped: do-nothing = {do_nothing['shaped']:.4f}, "
           f"three plates + perfect answer = {did_the_work['shaped']:.4f}")
     assert did_the_work["shaped"] > do_nothing["shaped"]
-    assert do_nothing["shaped"] == 0.0
+    # Even with a PERFECT answer, running nothing forfeits all five process
+    # terms: 0.55 of shaped is the ceiling for a policy that never ran a plate.
+    assert do_nothing["shaped"] == pytest.approx(0.55)
 
 
 # --------------------------------------------------------------------------

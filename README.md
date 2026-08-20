@@ -6,13 +6,13 @@ plates, decides what goes in every well, fights six realistic sources of assay
 artifact, and submits one answer. Grading is arithmetic, because the ground
 truth was written down before the agent existed.
 
-> **Status: Phases 1-4 of 6 complete.** The world model (hidden ground truth
-> plus the prior trap), the observation model (six assay artifacts), the
-> environment loop (budget, four tools, one submission) and the scoring
-> (`strict_pass` / `endpoint` / `shaped`) are built and tested, with 79 passing
-> checks and 77 mutants killed. The scripted baselines and the LLM harness are
-> **not built yet** — no policy has been run over seeds, so the ledger below is
-> still a target, not a result.
+> **Status: Phases 1-5 of 6 complete. The ledger has landed.** The world model,
+> the observation model, the environment loop, the scoring and the four scripted
+> baselines are built and tested, with 99 passing checks and 79 mutants killed.
+> **The baseline ladder is monotone in every tier and every cell matches the
+> BUILD_SPEC acceptance table within ±0.05** — see
+> [The ledger](#the-ledger-phase-5). The LLM harness and the verifiers adapter
+> are not built yet, so no model has been run against the environment.
 >
 > This README is a living document: it describes only what actually exists and
 > has been measured, and it is updated at the end of every phase. See the
@@ -66,7 +66,7 @@ python3 -m venv .venv
 ./.venv/bin/python -m pytest tests/ -q -s
 ```
 
-Expected: `79 passed`. The `-s` flag prints the measured values the checks
+Expected: `99 passed`. The `-s` flag prints the measured values the checks
 assert on, since those figures are the point.
 
 Dependencies are pinned exactly (`numpy==2.5.2`, `pytest==9.1.1`). The project's
@@ -429,6 +429,158 @@ reward — while `decoy_called` reads 1 and 0.
 
 ---
 
+## The ledger (Phase 5)
+
+**This is the phase that makes the project credible.** Before letting any model
+near the environment, answer the question almost nobody answers: does the reward
+actually separate competence from noise? Four scripted policies over the same
+200 seeds per tier are how you find out.
+
+```bash
+./.venv/bin/python verify.py                      # the three gate checks
+./.venv/bin/python run_baselines.py --n 200 --json results.json
+```
+
+### `strict_pass`, n = 200 per cell, mean ± standard error
+
+| tier | random | prior_parrot | naive_screen | competent_doe |
+|---|---|---|---|---|
+| clean | 0.000 ± 0.000 | 0.020 ± 0.010 | 0.280 ± 0.032 | **1.000 ± 0.000** |
+| standard | 0.000 ± 0.000 | 0.010 ± 0.007 | 0.080 ± 0.019 | **0.640 ± 0.034** |
+| hard | 0.000 ± 0.000 | 0.000 ± 0.000 | 0.020 ± 0.010 | **0.175 ± 0.027** |
+
+Every cell is inside the BUILD_SPEC acceptance table's ±0.05 tolerance; the
+worst deviation is **0.020**. Episodes are fully seeded, so these are fixed
+numbers, not sampling estimates — a cell that moves means the environment moved.
+
+**How to read these.**
+
+- **Monotone in every tier.** More real experimental design → higher score. This
+  is the property that has to hold, and it holds on all three rows.
+- **`clean/competent_doe = 1.000` is the most important cell, and the one people
+  skip.** It proves the task is *well-posed*: strip the artifacts and a correct
+  policy solves it every single time, over 200 seeds, with zero variance. So the
+  difficulty on the other tiers comes from noise and traps, not from an ambiguous
+  objective or an unfair scoring rule. Without this cell, a low hard-tier score
+  might just mean the environment is broken.
+- **`hard/competent_doe = 0.175` is good news.** An environment its own reference
+  policy saturates is useless for RL — there would be nothing left to learn.
+- **The trap works.** `prior_parrot` scores 0.020 / 0.010 / 0.000 despite being
+  handed most of the right answer.
+
+### `endpoint` and `shaped`
+
+| tier | metric | random | prior_parrot | naive_screen | competent_doe |
+|---|---|---|---|---|---|
+| clean | endpoint | 0.281 | 0.660 | 0.735 | 0.956 |
+| standard | endpoint | 0.246 | 0.509 | 0.613 | 0.877 |
+| hard | endpoint | 0.277 | 0.389 | 0.534 | 0.763 |
+| clean | shaped | 0.330 | 0.363 | 0.597 | 0.938 |
+| standard | shaped | 0.290 | 0.280 | 0.507 | 0.872 |
+| hard | shaped | 0.299 | 0.214 | 0.446 | 0.779 |
+
+This is exactly why `strict_pass` is the headline: `prior_parrot` runs **zero
+plates** and still scores 0.660 on `endpoint` on `clean`. Quote that number and
+the environment looks far weaker than it is.
+
+`shaped` is deliberately **not** monotone between `random` and `prior_parrot` on
+`standard` and `hard` (0.290 vs 0.280, 0.299 vs 0.214). That is correct
+behaviour, not a bug: `shaped` pays for process, `random` ran a plate, and
+`prior_parrot` ran none.
+
+### The degenerate exploit
+
+Calling every gene a hit — the classic way to farm recall:
+
+| tier | strict_pass | endpoint | recall | precision |
+|---|---|---|---|---|
+| clean | **0.000** | 0.373 ± 0.003 | 1.000 | 0.375 |
+| standard | **0.000** | 0.324 ± 0.003 | 1.000 | 0.300 |
+| hard | **0.000** | 0.347 ± 0.002 | 1.000 | 0.333 |
+
+Recall is farmed perfectly and it buys nothing, because `hit_f1` caps the payoff
+and `strict_pass` demands exact set equality.
+
+### Prior-dependence: fraction of episodes calling ≥1 decoy
+
+| tier | random | prior_parrot | naive_screen | competent_doe |
+|---|---|---|---|---|
+| standard | 0.460 | 0.680 | 0.355 | 0.220 |
+| hard | 0.665 | **1.000** | 0.610 | **0.470** |
+
+`clean` is 0.000 everywhere, because the trap is disabled on that tier. The
+reference policy still calls a decoy on **47%** of hard episodes — the direct
+measurement of prior-dependence, and the number this environment exists to
+produce.
+
+---
+
+## Does each artifact earn its place? (the ablation table)
+
+The ladder shows the reward is monotone in competence. It does **not** show that
+each of the six assay artifacts is doing work. So `competent_doe` was run again
+with one design step disabled at a time, n = 1000 per cell.
+
+### Cost of removing one defence, `strict_pass` (mean ± SE)
+
+| defence removed | standard (full = 0.628) | hard (full = 0.158) |
+|---|---|---|
+| one replicate instead of two | **+0.147 ± 0.022** (6.7 SE) | **+0.072 ± 0.015** (4.8 SE) |
+| full plate incl. perimeter | **+0.095 ± 0.022** (4.3 SE) | **+0.039 ± 0.015** (2.6 SE) |
+| no per-plate NTC normalisation | **+0.076 ± 0.022** (3.5 SE) | **+0.033 ± 0.016** (2.1 SE) |
+| no contaminated-quadrant flag | +0.044 ± 0.022 (2.0 SE) | +0.008 ± 0.016 (0.5 SE) |
+| no lot comparison / exclusion | **−0.074 ± 0.021** | **−0.056 ± 0.017** |
+| no QC of any kind | −0.020 ± 0.021 | −0.038 ± 0.017 |
+
+Positive means removing the defence **costs** score, which is the expected sign.
+Three defences clearly earn their place on both tiers. Two do not, and one of
+them is negative — removing it *helps*. Both were chased down rather than
+reported as noise.
+
+### Why lot exclusion costs score
+
+Not because the artifact is weak, and not because the detector is broken. The
+window rule works:
+
+| | standard | hard |
+|---|---|---|
+| worlds with a degraded lot | 0.381 | 0.562 |
+| bad-lot plates correctly excluded | **0.895** | **0.801** |
+| good plates wrongly excluded | 0.003 | 0.030 |
+| mean usable plates after exclusion | 2.656 | 2.520 |
+
+The detector is accurate. The problem is downstream: `competent_doe` pools three
+plates and takes the **median** per condition, and a median over six
+measurements is already immune to two of them being shrunk by a bad lot. So
+excluding buys no accuracy and costs a third of the data. *(That the median is
+the mechanism is an interpretation of the measurements above, not a separate
+measurement.)*
+
+Exclusion still pays on `shaped`, through `qc_hygiene`: 0.873 vs 0.835 on
+standard, 0.774 vs 0.724 on hard. The two rewards disagree about lot exclusion,
+and they disagree correctly — `shaped` credits the process (you caught the bad
+lot), `strict_pass` reports that in this particular analysis it did not change
+the answer.
+
+### Why the contamination flag stops earning its place on `hard`
+
+Here it *is* the defence failing, not the artifact being weak — the detector
+degrades out from under the policy:
+
+| | standard | hard |
+|---|---|---|
+| contaminated plates seen | 451 | 716 |
+| correctly detected | **0.863** | **0.508** |
+| spurious flags (of 1349 / 1084 clean plates) | 2 | 29 |
+
+Two NTC per quadrant against `hard`'s noise (`well_noise` 0.13, `pipet_cv` 0.09)
+gives a quadrant mean with a standard error near 0.11, so the 0.25 detection
+floor sits barely two standard errors out. The fix is more control wells per
+quadrant, which costs wells — exactly the allocation trade-off the budget
+exists to force, and headroom no policy here uses.
+
+---
+
 ## Four design decisions that are load-bearing
 
 Each of these guards a specific failure mode that makes the environment stop
@@ -640,6 +792,46 @@ reading hands a do-nothing policy a free 0.12 for hygiene it never
 demonstrated — the same failure the efficiency gate exists to prevent. Process
 credit has to require process.
 
+## Measured Phase 5 numbers
+
+Everything above in [The ledger](#the-ledger-phase-5) and
+[the ablation table](#does-each-artifact-earn-its-place-the-ablation-table) is
+measured, n = 200 for the ledger and n = 1000 for the ablations, seeds from 0.
+Two figures are **analytic**: the balanced plate on `hard` is 8 NTC + 3 POS +
+24 KD + 16 dose = 51 wells, and `480 + 11 × 51 = $1,041`, so three of them cost
+`$3,123` of the tier's `$3,300` and take exactly 9 of its 9 days.
+
+| check | result |
+|---|---|
+| ledger cells inside the ±0.05 acceptance tolerance | **12 of 12**, worst deviation 0.020 |
+| ladder monotone | **all three tiers** |
+| `prior_parrot` ≤ 0.05 | **all three tiers** (0.020 / 0.010 / 0.000) |
+| determinism, 144 replayed episodes | **0 mismatches** |
+| "call every gene a hit" | **strict_pass 0.000** on every tier |
+| competent_doe budget on `hard` | 3 plates, **$3,123 of $3,300, 9 of 9 days** (analytic) |
+| noiseless EC50 fit error | < 0.25 log units on all four test curves |
+| noisy EC50 fit (sd 0.05, 6 reps, 200 curves) | **0.945** within the 0.4 tolerance |
+
+### One construction choice made from evidence
+
+BUILD_SPEC describes `naive_screen` as "one plate, one well per condition, no
+controls, random lot, threshold raw values against their median" — and does not
+say whether the compound doses are among the conditions, or how it should get an
+EC50 at all. The two readings give very different ledgers:
+
+| reading | clean | standard | hard |
+|---|---|---|---|
+| no dose series, guess log_ec50 = 2.0 | **0.280** | **0.080** | **0.020** |
+| dose series + half-maximal fit | 0.630 | 0.115 | 0.005 |
+| BUILD_SPEC target | 0.275 | 0.075 | 0.005 |
+
+The first reproduces all three target cells; the second misses `clean` by 0.355.
+A screener that runs a dose-response series and fits it is not being naive, so
+this is also the reading that matches the policy's name. **No constant was
+tuned** — the choice is structural, it was made by measuring both candidates
+against three independent target cells, and both ledgers are recorded here and
+in the policy's docstring so the decision can be overruled.
+
 ---
 
 ## Build status
@@ -650,7 +842,7 @@ credit has to require process.
 | 2 | `assaygym/assay.py` | observation model — the six artifacts | **done**, 17 checks passing |
 | 3 | `assaygym/env.py` | episode loop, tool API, budget | **done**, 23 checks passing |
 | 4 | `assaygym/rewards.py` | scoring — three numbers plus diagnostics | **done**, 24 checks passing |
-| 5 | `assaygym/policies.py` | four scripted baselines | not started |
+| 5 | `assaygym/policies.py` | four scripted baselines + the ledger | **done**, 18 checks passing |
 | 6 | `assaygym/llm_harness.py`, `vf_adapter.py` | Anthropic tool-use + verifiers adapter | not started |
 
 Each phase has an acceptance check that must pass before the next one starts.
@@ -715,28 +907,40 @@ check on the `sign_acc` denominator. Two judgment calls are documented in
 [Measured Phase 4 numbers](#measured-phase-4-numbers): the prior-parrot clears
 the efficiency gate on some seeds, and `qc_hygiene` with zero plates scores 0.0.
 
-*Next: Phase 5, `policies.py` and `verify.py` — the baselines, and the gate.*
+**2026-08-20 — Phase 5: the baselines. The gate.**
+`policies.py` (four scripted policies plus the shared helpers and six
+ablations), `run_baselines.py` and `verify.py`. 18 acceptance checks, and the
+ledger is now a result rather than a target: **every one of the 12 cells lands
+inside the ±0.05 acceptance tolerance, worst deviation 0.020, monotone in all
+three tiers**, with `clean/competent_doe = 1.000 ± 0.000` and `prior_parrot` at
+0.020 / 0.010 / 0.000. Determinism holds over 144 replayed episodes and the
+"call every gene a hit" exploit scores exactly 0.000 everywhere. Also ran a
+six-way ablation of the reference policy at n = 1000, which found that lot
+exclusion *costs* score (the detector is accurate; the policy's median pooling
+made the defence redundant) and that the contamination detector fires only 50.8%
+of the time on `hard`. Both are written up in
+[the ablation table](#does-each-artifact-earn-its-place-the-ablation-table).
+Two agreed changes to Phase 4 landed first: `efficiency` now also requires
+`n_plates > 0`, and the zero-plate `qc_hygiene` override was confirmed not to
+touch the ordinary no-bad-lot branch.
+
+*Next: Phase 6, `llm_harness.py` and `vf_adapter.py` — the interfaces.*
 
 ---
 
 ## What is not proven yet
 
-Phase 5 is the phase that would make this credible: run scripted baseline
-policies and check that the reward actually separates competence from noise.
-**It has not been run.** The intended ladder is a design target, not a result:
-
-| tier | random | prior_parrot | naive_screen | competent_doe |
-|---|---|---|---|---|
-| clean | 0.000 | 0.040 | 0.275 | **1.000** |
-| standard | 0.000 | 0.015 | 0.075 | **0.620** |
-| hard | 0.000 | 0.000 | 0.005 | **0.165** |
-
-Treat every cell as unverified until `run_baselines.py` exists and prints them.
-The two numbers that will matter most: `clean/competent_doe = 1.000` would prove
-the task is *well-posed* (strip the artifacts and a correct policy solves it
-every time, so difficulty elsewhere comes from noise and traps rather than an
-ambiguous objective), and `prior_parrot` near zero would prove the trap works.
-If `prior_parrot` scores well above 0.05, something is wrong.
+- **No language model has been run against this.** Phases 1-5 prove the
+  environment is well-posed and that the reward separates *scripted* competence
+  from noise. Whether it separates model competence is untested until Phase 6.
+- **The artifact parameters are not calibrated** against real plate data. See
+  [Limits](#limits-honestly).
+- **The reference policy is not the ceiling.** `hard/competent_doe = 0.175`
+  leaves most of the tier unsolved, and the ablation table below names an
+  obvious unexploited strategy: on `hard` the contamination detector only fires
+  half the time, because two NTC per quadrant is not enough to resolve a 0.45
+  offset against that tier's noise. Spending wells on more controls, or on
+  confirming borderline calls, is headroom no scripted policy here uses.
 
 ---
 
@@ -753,12 +957,12 @@ If `prior_parrot` scores well above 0.05, something is wrong.
   domain expert should be asked for.
 - **No gene-gene interactions, no time course, no inventory or sample-tracking
   layer.**
-- **Phases 5-6 do not exist yet.** There is a world model, an observation
-  model, a playable environment and a scorer — but **no baselines have been
-  run**, so it has not been shown that the reward separates competence from
-  noise. That is the phase that would make this credible, and every number in
-  [What is not proven yet](#what-is-not-proven-yet) is a target until it runs.
-  No agent has ever been run against the environment.
+- **Phase 6 does not exist yet**, so **no language model has ever been run
+  against this environment.** The ladder proves the reward separates *scripted*
+  competence from noise. Whether it separates model competence is untested.
+- **The reference policy is not optimal**, and the ablation table says where it
+  is leaving score on the table. Treat `hard/competent_doe = 0.175` as a
+  scripted baseline, not a ceiling.
 
 ---
 
@@ -771,11 +975,15 @@ assaygym/
   assay.py           Phase 2 - observation model, the six artifacts
   env.py             Phase 3 - episode loop, tool API, budget
   rewards.py         Phase 4 - the judge: strict_pass, endpoint, shaped
+  policies.py        Phase 5 - four scripted baselines + ablations
+run_baselines.py     Phase 5 - the ledger
+verify.py            Phase 5 - determinism, exploit check, error bars
 tests/
   test_world.py      Phase 1 acceptance suite (15 checks)
   test_assay.py      Phase 2 acceptance suite (17 checks)
   test_env.py        Phase 3 acceptance suite (23 checks)
-  test_rewards.py    Phase 4 acceptance suite (24 checks)
+  test_rewards.py    Phase 4 acceptance suite (26 checks)
+  test_policies.py   Phase 5 acceptance suite (18 checks) -- the ledger
 tools/
   mutate.py          mutation testing: break the source, confirm the suite notices
 requirements.txt     pinned: numpy 2.5.2, pytest 9.1.1

@@ -41,15 +41,48 @@ If you'd rather activate the venv (`source .venv/bin/activate`), the commands
 become plain `pip` / `pytest`. The explicit `./.venv/bin/...` form is used above
 so the commands are correct whether or not the venv is active.
 
+## The Phase 5 gate
+
+Phase 5 is the phase that makes the project credible, and it is a gate: if the
+baseline ladder is not monotone, the bug is in the world model or the scoring,
+not in the policy.
+
+```bash
+./.venv/bin/python verify.py                       # the three gate checks
+./.venv/bin/python run_baselines.py --n 200 --json results.json
+./.venv/bin/python run_baselines.py --n 1000 --ablate --tiers standard hard
+```
+
+`verify.py` checks determinism, that the "call every gene a hit" exploit scores
+exactly zero, and that the ledger matches the BUILD_SPEC acceptance table within
+±0.05 while staying monotone in every tier. It exits non-zero if any of the
+three fails. The same checks run inside `tests/test_policies.py`, which is where
+they belong for CI; `verify.py` is the human-readable version.
+
+**Never tune a policy to hit a ledger number.** Every constant in
+`policies.py` is either specified by BUILD_SPEC or derived from the assay
+(`CONTAM_FLOOR = 0.25` sits between a real effect at 0.20 and contamination at
+0.45). If a cell misses, the cause is upstream. `naive_screen` is the one place
+a construction choice was made from evidence rather than from the text, and the
+reasoning plus both candidate ledgers are in its docstring.
+
+Episodes are fully seeded, so ledger cells are fixed numbers rather than
+sampling estimates. A cell that moves means the environment moved.
+
 ## Mutation testing
 
 The test suites are checked by breaking the source on purpose:
 
 ```bash
-./.venv/bin/python tools/mutate.py            # every target
+./.venv/bin/python tools/mutate.py            # every target (slow: ~4 min)
 ./.venv/bin/python tools/mutate.py rewards    # one module
 ./.venv/bin/python tools/mutate.py --list     # the catalogue, without running
 ```
+
+Each mutant runs the whole suite, so a full sweep is 80-odd suite runs. Since
+Phase 5 the suite includes the baseline ledger, which dominates the time. Narrow
+it with `-k tests/test_rewards.py` while iterating, then do one full sweep before
+committing.
 
 `tools/mutate.py` applies each catalogued edit to one file, runs the suite,
 restores the file, and reports whether the suite noticed. Exit code is 0 only
@@ -119,7 +152,8 @@ mutant.
 | 2 | `assaygym/assay.py` | `tests/test_assay.py` (17 checks, passing) |
 | 3 | `assaygym/env.py` | `tests/test_env.py` (23 checks, passing) |
 | 4 | `assaygym/rewards.py` | `tests/test_rewards.py` (24 checks, passing) |
-| 5 | `assaygym/policies.py` | not started |
+| 5 | `assaygym/policies.py`, `run_baselines.py`, `verify.py` | `tests/test_policies.py` (18 checks, passing) |
+| 6 | `assaygym/llm_harness.py`, `vf_adapter.py` | not started |
 
 Each phase has an acceptance check that must pass before the next phase begins.
 

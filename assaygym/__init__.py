@@ -8,9 +8,25 @@ Phase 1 (``world.py``) samples the hidden ground truth. Phase 2 (``assay.py``)
 turns it into the noisy measurements an agent actually sees. Phase 3
 (``env.py``) is the lab bench the agent operates: budget, four tools, one
 submission. Phase 4 (``rewards.py``) is the judge: three separate numbers plus
-diagnostics that are reported but never scored.
+diagnostics that are reported but never scored. Phase 5 (``policies.py``) is
+four scripted baselines whose ledger proves the reward separates competence
+from noise.
 """
 
+from assaygym.policies import (
+    ABLATIONS,
+    DOSES,
+    INTERIOR,
+    POLICIES,
+    POLICY_RNG_OFFSET,
+    call_everything_policy,
+    competent_doe_policy,
+    naive_screen_policy,
+    prior_parrot_policy,
+    random_policy,
+    run_episode,
+    run_policy,
+)
 from assaygym.rewards import (
     EC50_TOLERANCE,
     EFFICIENCY_GATE,
@@ -91,6 +107,19 @@ __all__ = [
     "SHAPED_WEIGHTS",
     "EC50_TOLERANCE",
     "EFFICIENCY_GATE",
+    # policies (Phase 5)
+    "POLICIES",
+    "ABLATIONS",
+    "INTERIOR",
+    "DOSES",
+    "POLICY_RNG_OFFSET",
+    "random_policy",
+    "prior_parrot_policy",
+    "naive_screen_policy",
+    "competent_doe_policy",
+    "call_everything_policy",
+    "run_episode",
+    "run_policy",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

@@ -252,9 +252,12 @@ def _qc_hygiene(world: World, plates: Sequence[PlateResult]) -> float:
       first term is 1.0 and the metric reduces to a pure penalty for excluding
       good plates.
 
-    Running no plates at all scores 0.0 rather than 1.0. The literal formula
-    would hand a do-nothing policy a free 0.12 of shaped reward for hygiene it
-    never demonstrated, which is the same failure the efficiency gate exists to
+    Running **no plates at all** scores 0.0 rather than 1.0. That is the only
+    case this override touches: a policy that ran plates and simply had no bad
+    lot to catch still gets ``caught = 1.0``, so the metric reduces to the pure
+    over-exclusion penalty the spec describes. The literal formula would instead
+    hand a do-nothing policy a free 0.12 of shaped reward for hygiene it never
+    demonstrated, which is the same failure the efficiency gate exists to
     prevent. Process credit has to require process.
     """
     if not plates:
@@ -277,13 +280,23 @@ def _qc_hygiene(world: World, plates: Sequence[PlateResult]) -> float:
     return _clip01(caught - wrongly)
 
 
-def _efficiency(endpoint: float, usd_spent: float, budget_usd: float) -> float:
-    """Fraction of budget unspent, GATED on endpoint > 0.4.
+def _efficiency(
+    endpoint: float, usd_spent: float, budget_usd: float, n_plates: int
+) -> float:
+    """Fraction of budget unspent, gated twice: endpoint > 0.4 AND a plate run.
 
-    Thrift only pays if it worked. Without the gate the reward-optimal policy is
-    to run nothing and bank the entire budget, which would make the environment
-    reward exactly the behaviour it exists to detect.
+    Thrift only pays if it worked, and only if there was an experiment to be
+    thrifty about.
+
+    The endpoint gate alone is not sufficient, and the measurement is in the
+    README: a policy that parrots the literature prior and runs **zero plates**
+    scores 0.4-0.67 on endpoint by the spec's own reckoning, so it clears an
+    endpoint-only gate on 100% of `clean` seeds and banks the entire budget for
+    an experiment it never ran. Requiring at least one plate closes that, and
+    costs a genuine experiment nothing.
     """
+    if n_plates <= 0:
+        return 0.0
     if endpoint <= EFFICIENCY_GATE:
         return 0.0
     if budget_usd <= 0:
@@ -307,7 +320,7 @@ def shaped_terms(
         "replication": _replication(plates, hits),
         "self_normalizable": _self_normalizable(plates),
         "qc_hygiene": _qc_hygiene(world, plates),
-        "efficiency": _efficiency(endpoint, usd_spent, budget_usd),
+        "efficiency": _efficiency(endpoint, usd_spent, budget_usd, len(plates)),
     }
     terms["shaped"] = float(sum(SHAPED_WEIGHTS[k] * terms[k] for k in SHAPED_WEIGHTS))
     return terms
