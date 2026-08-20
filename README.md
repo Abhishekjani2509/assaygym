@@ -151,6 +151,83 @@ partitioned into three groups:
 
 ---
 
+## What Phase 2 gives you
+
+`assaygym/assay.py` is the dirty window: what happens between the truth and the
+number the agent receives. `run_plate` takes a layout (well → condition), a
+reagent lot and an rng, and returns a `PlateResult`.
+
+```python
+import numpy as np
+from assaygym import sample_world, override_phenotype_from_deltas, run_plate
+
+w = override_phenotype_from_deltas(sample_world(7, "standard"))
+layout = {"B2": "NTC", "B3": "POS", "B4": "KD:SYN03", "B5": "CMPD@300"}
+res = run_plate(w, "P1", layout, "LOT-A", np.random.default_rng(0), day=3, cost=1041.0)
+
+res.values   # {'B2': 1.2293, 'B3': 2.0592, 'B4': 1.6604, 'B5': 0.8734}
+```
+
+Compare those against the noise-free truth in the Phase 1 example above
+(1.1694 / 2.0700 / 1.4808 / 0.9823) and the gap is the six artifacts at work.
+That gap is the entire task: the agent has to design its way back to the left
+column from samples of the right one.
+
+### The six artifacts
+
+Each exists to punish one specific missing experimental skill. An artifact that
+punishes nothing is just noise, and noise alone makes the task harder without
+making it more diagnostic.
+
+| # | artifact | punishes |
+|---|---|---|
+| 1 | reagent lot potency | never running positive controls |
+| 2 | pipetting error (multiplicative) | trusting a single well instead of replicating |
+| 3 | batch shift (once per plate) | comparing across plates without an on-plate control |
+| 4 | edge bias | filling the plate from A1 |
+| 5 | contamination (one quadrant) | bunching all controls in one corner |
+| 6 | measurement noise | reading one well as truth |
+
+They are applied in exactly that order:
+
+```python
+truth  = world.condition_value(condition)
+effect = truth - baseline_phenotype
+obs    = baseline_phenotype + effect * lot_potency   # 1. lot
+obs   *= (1 + rng.normal(0, pipet_cv))               # 2. pipetting
+obs   += batch_shift                                 # 3. batch  (once per plate)
+if is_edge(well):     obs += edge_bias               # 4. edge
+if in contaminated q: obs += rng.normal(0.45, 0.15)  # 5. contamination (once per plate)
+obs   += rng.normal(0, well_noise)                   # 6. noise
+```
+
+**The order is load-bearing.** Lot potency multiplies the *effect above
+baseline*, not the raw value, so a degraded lot shrinks the assay window rather
+than translating the plate — the collapsed positive-control window is the only
+signal an agent has that anything is wrong. Pipetting error is multiplicative
+and lands *before* the additive batch shift, which keeps a per-plate offset
+separable from per-well scatter; inverted, it would scale the batch offset too
+and couple the two.
+
+Both errors leave the observations superficially plausible while destroying what
+the agent can detect, so the suite pins the order down rather than trusting it.
+Confirmed by **mutation testing**: making the lot multiply the raw value, moving
+pipetting after the batch shift, drawing the batch shift or the contaminated
+quadrant per well, making pipetting additive, or inverting the edge test each
+break at least one test, while a no-op control change correctly breaks none.
+
+The pipetting-after-batch mutation initially survived the whole suite — the two
+orders produce identical plate means, so nothing then in the tests could
+separate them. `test_pipetting_precedes_batch_shift` closed that gap by
+measuring the correlation between a plate's mean and its internal spread, which
+is ~0 for the correct order and ~+1 for the inverted one.
+
+`z_prime(pos, neg)` reports assay quality as
+`1 - 3*(sd(pos) + sd(neg)) / |mean(pos) - mean(neg)|`, returning `nan` with
+fewer than two of either control.
+
+---
+
 ## Four design decisions that are load-bearing
 
 Each of these guards a specific failure mode that makes the environment stop
@@ -294,37 +371,6 @@ plausible ordering bugs — see [The six artifacts](#the-six-artifacts).
 
 *Next: Phase 3, `env.py` — the episode loop, tool API and budget.*
 
-### The six artifacts
-
-Each exists to punish one specific missing experimental skill. An artifact that
-punishes nothing is just noise, and noise alone makes the task harder without
-making it more diagnostic.
-
-| # | artifact | punishes |
-|---|---|---|
-| 1 | reagent lot potency | never running positive controls |
-| 2 | pipetting error (multiplicative) | trusting a single well instead of replicating |
-| 3 | batch shift (once per plate) | comparing across plates without an on-plate control |
-| 4 | edge bias | filling the plate from A1 |
-| 5 | contamination (one quadrant) | bunching all controls in one corner |
-| 6 | measurement noise | reading one well as truth |
-
-**The application order is load-bearing.** Lot potency multiplies the *effect
-above baseline*, not the raw value, so a degraded lot shrinks the assay window
-rather than translating the plate — the collapsed positive-control window is the
-only signal an agent has that anything is wrong. Pipetting error is
-multiplicative and lands *before* the additive batch shift, which keeps a
-per-plate offset separable from per-well scatter; inverted, it would scale the
-batch offset too and couple the two.
-
-Both errors would leave the observations superficially plausible while
-destroying what the agent can detect, so the suite pins the order down
-explicitly rather than trusting it. Confirmed by mutation testing: making the
-lot multiply the raw value, moving pipetting after the batch shift, drawing the
-batch shift or the contaminated quadrant per well, making pipetting additive, or
-inverting the edge test each break at least one test, while a no-op control
-change correctly breaks none.
-
 ---
 
 ## What is not proven yet
@@ -361,7 +407,9 @@ If `prior_parrot` scores well above 0.05, something is wrong.
   domain expert should be asked for.
 - **No gene-gene interactions, no time course, no inventory or sample-tracking
   layer.**
-- **Phases 2-6 do not exist yet**, so nothing here has been shown end-to-end.
+- **Phases 3-6 do not exist yet**, so nothing here has been shown end-to-end.
+  There is a world model and an observation model, but no episode loop, no
+  scoring, and no agent has ever been run against it.
 
 ---
 
