@@ -72,7 +72,23 @@ def smoke(model: str, tier: str, seed: int, verbose: bool) -> int:
         events.append(kind)
 
     t0 = time.time()
-    res = run_episode(seed, tier, model=model, on_event=on_event)
+    try:
+        res = run_episode(seed, tier, model=model, on_event=on_event)
+    except Exception as exc:                                   # noqa: BLE001
+        message = str(exc)
+        print(f"\n  REQUEST FAILED: {exc.__class__.__name__}\n  {message}\n")
+        # The one schema shape validated offline against ToolParam but not
+        # against the API's own validator.
+        if "input_schema" in message or "tools" in message or "schema" in message:
+            print("  This looks like a tool-schema rejection. The most likely\n"
+                  "  culprit is the union type on submit.log_ec50:\n"
+                  "      \"type\": [\"number\", \"null\"]\n"
+                  "  If so, the fix is to make it a plain \"number\" and drop it\n"
+                  "  from `required`, so omitting it means 'not measured'.\n"
+                  "  assaygym/env.py, TOOL_SPEC, submit.input_schema.")
+        elif "credit" in message.lower() or "billing" in message.lower():
+            print("  Billing/credit issue, not a code issue.")
+        return 1
     elapsed = time.time() - t0
 
     print(f"\n  turns            {res.turns} / 24")
