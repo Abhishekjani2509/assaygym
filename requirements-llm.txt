@@ -1,0 +1,10 @@
+# Optional, Phase 6 only: needed to run a real model against the environment
+# via assaygym/llm_harness.py or run_llm_baselines.py.
+#
+# Kept out of requirements.txt on purpose. The project's reproducibility claim
+# is about the scripted ledger, and that needs neither this package nor an API
+# key -- llm_harness imports the SDK lazily, so the module imports, tests and
+# scores without it.
+#
+#   ./.venv/bin/pip install -r requirements-llm.txt
+anthropic==1.0.0

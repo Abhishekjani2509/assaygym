@@ -172,8 +172,18 @@ additionally needs `anthropic` **only to make a real API call** — the SDK is
 imported lazily, so the module imports, tests and scores without it:
 
 ```bash
-./.venv/bin/pip install anthropic     # optional
+./.venv/bin/pip install -r requirements-llm.txt     # optional
+export ANTHROPIC_API_KEY=sk-ant-...
+
+./.venv/bin/python run_llm_baselines.py --smoke                  # one episode
+./.venv/bin/python run_llm_baselines.py --models claude-sonnet-5 \
+    --n 10 --max-usd 12 --json llm_results.json                  # the sweep
 ```
+
+`--max-usd` is a hard cap checked before every episode, not advisory. Episode
+cost grows roughly quadratically in turns — the whole transcript is resent each
+turn and a plate result is ~50 floats — so a model that flails through all 24
+turns costs several times one that runs three plates and submits.
 
 ## Definition of done for a phase
 

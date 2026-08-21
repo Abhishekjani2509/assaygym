@@ -31,7 +31,9 @@ from assaygym.env import TOOL_SPEC  # noqa: E402
 from assaygym.llm_harness import (  # noqa: E402
     DEFAULT_MODEL,
     MAX_TURNS,
+    PRICE_PER_MTOK,
     HarnessResult,
+    episode_cost_usd,
     format_briefing,
     run_episode,
 )
@@ -67,9 +69,11 @@ class Block(dict):
 
 
 class Response:
-    def __init__(self, content, stop_reason):
+    def __init__(self, content, stop_reason, usage=None):
         self.content = content
         self.stop_reason = stop_reason
+        if usage is not None:
+            self.usage = usage
 
 
 class StubClient:
@@ -411,6 +415,67 @@ def test_result_to_dict_is_json_serialisable():
     res = run_episode(1, "clean", client=client)
     assert isinstance(res, HarnessResult)
     json.dumps(res.to_dict())
+
+
+# --------------------------------------------------------------------------
+# Usage and cost reporting
+# --------------------------------------------------------------------------
+
+
+def test_usage_accumulates_across_turns_and_prices_out():
+    """Cost is part of the harness being a reported variable, not a hidden one."""
+    usage = {"input_tokens": 1000, "output_tokens": 500,
+             "cache_read_input_tokens": 2000,
+             "cache_creation_input_tokens": 400}
+    client = StubClient([
+        Response([_tool_use("t1", "qc", {"plate_id": "P1"})], "tool_use", usage),
+        Response([_tool_use("t2", "submit",
+                            {"hits": [], "signs": {}, "log_ec50": None})],
+                 "tool_use", usage),
+    ])
+    res = run_episode(1, "clean", client=client, model="claude-sonnet-5")
+
+    assert res.usage == {k: v * 2 for k, v in usage.items()}
+    # 3.00/MTok in, 15.00/MTok out; cache read at 0.1x, cache write at 1.25x.
+    billed_in = 2000 + 0.1 * 4000 + 1.25 * 800
+    expected = billed_in / 1e6 * 3.00 + 1000 / 1e6 * 15.00
+    print(f"\n[measured] usage over 2 turns: {res.usage}")
+    print(f"[measured] cost = ${res.cost_usd:.6f} (analytic ${expected:.6f})")
+    assert res.cost_usd == pytest.approx(expected)
+    json.dumps(res.to_dict())
+
+    # An unpriced model reports 0.0 rather than guessing a price.
+    assert episode_cost_usd(usage, "some-unreleased-model") == 0.0
+    assert set(PRICE_PER_MTOK) >= {"claude-opus-5", "claude-sonnet-5",
+                                   "claude-haiku-4-5"}
+
+
+def test_clients_that_report_no_usage_do_not_crash():
+    """Every other stub in this file has no .usage attribute at all."""
+    client = StubClient([Response(
+        [_tool_use("t1", "submit", {"hits": [], "signs": {}, "log_ec50": None})],
+        "tool_use")])
+    res = run_episode(1, "clean", client=client)
+    assert res.usage == {} and res.cost_usd == 0.0
+
+    # A usage object rather than a dict, which is what the real SDK returns --
+    # and whose fields are not all plain ints. `cache_creation` is a nested
+    # object on some SDK versions and `None` on others; either must be skipped,
+    # not summed. Found by tools/mutate.py: testing only the None case left the
+    # int guard unexercised, because a `value is not None` check skips None too.
+    class Usage:
+        input_tokens, output_tokens = 10, 20
+        cache_read_input_tokens = None              # null on some responses
+        cache_creation_input_tokens = {"ephemeral_5m_input_tokens": 7}
+    obj = StubClient([Response(
+        [_tool_use("t1", "submit", {"hits": [], "signs": {}, "log_ec50": None})],
+        "tool_use", Usage())])
+    res2 = run_episode(1, "clean", client=obj, model="claude-haiku-4-5")
+    assert res2.usage == {"input_tokens": 10, "output_tokens": 20}
+    assert res2.cost_usd == pytest.approx(10 / 1e6 * 1.0 + 20 / 1e6 * 5.0)
+    print(f"[measured] SDK-shaped usage object read correctly: {res2.usage}; "
+          f"null and nested-object fields skipped, not summed; "
+          f"cost ${res2.cost_usd:.8f}")
 
 
 # --------------------------------------------------------------------------

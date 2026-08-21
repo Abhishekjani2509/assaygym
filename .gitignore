@@ -19,6 +19,7 @@ dist/
 # Generated results (regenerate with run_baselines.py)
 results.json
 ablations*.json
+llm_results*.json
 
 # Internal build specification - not published
 BUILD_SPEC.md

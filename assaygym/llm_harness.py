@@ -38,6 +38,8 @@ from assaygym.env import TOOL_SPEC, AssayGym
 from assaygym.rewards import score
 
 __all__ = [
+    "PRICE_PER_MTOK",
+    "episode_cost_usd",
     "DEFAULT_MODEL",
     "MAX_TURNS",
     "MAX_TOKENS",
@@ -54,6 +56,36 @@ __all__ = [
 DEFAULT_MODEL = "claude-opus-5"
 MAX_TURNS = 24
 MAX_TOKENS = 16_000
+
+# USD per million tokens, (input, output). Used only to report what a run cost
+# and to enforce a spend cap -- never to choose a model. Update alongside
+# published pricing; a missing model reports a cost of 0.0 rather than guessing.
+PRICE_PER_MTOK: Dict[str, tuple] = {
+    "claude-opus-5": (5.00, 25.00),
+    "claude-sonnet-5": (3.00, 15.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-opus-4-8": (5.00, 25.00),
+    "claude-fable-5": (10.00, 50.00),
+}
+
+
+def episode_cost_usd(usage: Dict[str, int], model: str) -> float:
+    """What one episode cost, from real reported usage. 0.0 for unpriced models.
+
+    Cache reads are billed at ~0.1x input and cache writes at ~1.25x; both are
+    counted at those multipliers so the figure is not silently optimistic.
+    """
+    price = PRICE_PER_MTOK.get(model)
+    if price is None:
+        return 0.0
+    pin, pout = price
+    billed_in = (
+        usage.get("input_tokens", 0)
+        + 0.1 * usage.get("cache_read_input_tokens", 0)
+        + 1.25 * usage.get("cache_creation_input_tokens", 0)
+    )
+    return billed_in / 1e6 * pin + usage.get("output_tokens", 0) / 1e6 * pout
+
 
 SYSTEM_PROMPT = (
     "You are an experimental scientist running a gene-knockdown screening "
@@ -83,6 +115,11 @@ class HarnessResult:
     submitted: bool = False
     forced_submission: bool = False
     stop_reason: Optional[str] = None
+    # Real reported token usage, summed over turns. Empty when the client does
+    # not report any (every stub in the test suite). Cost is part of the
+    # harness being a reported variable rather than a hidden one.
+    usage: Dict[str, int] = field(default_factory=dict)
+    cost_usd: float = 0.0
     harness: Dict[str, Any] = field(default_factory=dict)
     messages: List[Dict[str, Any]] = field(default_factory=list)
     # The finished environment. Carried so a caller can inspect what actually
@@ -104,6 +141,8 @@ class HarnessResult:
             "stop_reason": self.stop_reason, "harness": dict(self.harness),
             "n_tool_calls": len(self.tool_calls),
             "n_tool_errors": self.n_tool_errors,
+            "usage": dict(self.usage),
+            "cost_usd": self.cost_usd,
         }
 
 
@@ -137,6 +176,24 @@ def format_briefing(briefing: Dict[str, Any]) -> str:
         "Plan your plates, run them, and call submit once with your final "
         "answer."
     )
+
+
+_USAGE_FIELDS = (
+    "input_tokens", "output_tokens",
+    "cache_read_input_tokens", "cache_creation_input_tokens",
+)
+
+
+def _accumulate_usage(total: Dict[str, int], response: Any) -> None:
+    """Add this response's usage to the running total, if it reports any."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    for name in _USAGE_FIELDS:
+        value = (usage.get(name) if isinstance(usage, dict)
+                 else getattr(usage, name, None))
+        if isinstance(value, int):
+            total[name] = total.get(name, 0) + value
 
 
 def _blocks(response: Any) -> List[Any]:
@@ -194,6 +251,7 @@ def run_episode(
         {"role": "user", "content": format_briefing(briefing)}
     ]
     tool_calls: List[Dict[str, Any]] = []
+    usage_total: Dict[str, int] = {}
     turns = 0
     stop_reason: Optional[str] = None
 
@@ -217,6 +275,7 @@ def run_episode(
         }
         create_kwargs.update(extra_create_kwargs or {})
         response = client.messages.create(**create_kwargs)
+        _accumulate_usage(usage_total, response)
         stop_reason = getattr(response, "stop_reason", None)
         emit("response", {"turn": turns, "stop_reason": stop_reason})
 
@@ -281,7 +340,8 @@ def run_episode(
         env=env,
         seed=seed, tier=tier, score=score(env), turns=turns,
         tool_calls=tool_calls, submitted=submitted, forced_submission=forced,
-        stop_reason=stop_reason,
+        stop_reason=stop_reason, usage=usage_total,
+        cost_usd=episode_cost_usd(usage_total, model),
         harness={
             "model": model, "max_turns": max_turns, "max_tokens": max_tokens,
             "thinking": dict(thinking), "system_prompt_chars": len(system),
